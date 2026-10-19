@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -17,7 +19,7 @@ dotenv.config();
 
 const client = new AhClient();
 
-function toolError(error: any) {
+export function toolError(error: any) {
   return {
     content: [{ type: "text" as const, text: `Error: ${error.message}` }],
     isError: true,
@@ -68,7 +70,8 @@ async function showStatus(): Promise<void> {
   }
 }
 
-export function createServer(): McpServer {
+export function createServer(customClient?: AhClient): McpServer {
+  const c = customClient || client;
   const server = new McpServer({
     name: "appie-mcp",
     version: "0.1.0",
@@ -86,7 +89,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const profile = await client.getProfile();
+        const profile = await c.getProfile();
         return {
           content: [
             {
@@ -123,7 +126,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const profile = await client.getProfile();
+        const profile = await c.getProfile();
         return {
           content: [{ type: "text", text: JSON.stringify(profile, null, 2) }],
         };
@@ -155,7 +158,7 @@ export function createServer(): McpServer {
     },
     async ({ query, sort, bonus_only, limit, page }) => {
       try {
-        const result = await client.searchProducts({
+        const result = await c.searchProducts({
           query,
           sort,
           bonusOnly: bonus_only,
@@ -185,7 +188,7 @@ export function createServer(): McpServer {
     },
     async ({ product_id }) => {
       try {
-        const product = await client.getProduct(product_id);
+        const product = await c.getProduct(product_id);
         return {
           content: [{ type: "text", text: JSON.stringify(product, null, 2) }],
         };
@@ -208,7 +211,7 @@ export function createServer(): McpServer {
     },
     async ({ product_id }) => {
       try {
-        const alternatives = await client.getProductAlternatives(product_id);
+        const alternatives = await c.getProductAlternatives(product_id);
         return {
           content: [{ type: "text", text: JSON.stringify(alternatives, null, 2) }],
         };
@@ -229,7 +232,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const categories = await client.getCategories();
+        const categories = await c.getCategories();
         return {
           content: [{ type: "text", text: JSON.stringify(categories, null, 2) }],
         };
@@ -250,7 +253,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const offers = await client.getBonusOffers();
+        const offers = await c.getBonusOffers();
         return {
           content: [{ type: "text", text: JSON.stringify(offers, null, 2) }],
         };
@@ -271,7 +274,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const box = await client.getPersonalBonus();
+        const box = await c.getPersonalBonus();
         return {
           content: [{ type: "text", text: JSON.stringify(box, null, 2) }],
         };
@@ -292,7 +295,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const list = await client.getShoppingList();
+        const list = await c.getShoppingList();
         return {
           content: [{ type: "text", text: JSON.stringify(list, null, 2) }],
         };
@@ -329,7 +332,7 @@ export function createServer(): McpServer {
           productId: i.product_id,
           type: (i.product_id ? "PRODUCT" : "FREE_TEXT") as "PRODUCT" | "FREE_TEXT",
         }));
-        const res = await client.addShoppingListItems(mapped);
+        const res = await c.addShoppingListItems(mapped);
         return {
           content: [{ type: "text", text: JSON.stringify({ status: "ok", result: res }, null, 2) }],
         };
@@ -352,7 +355,7 @@ export function createServer(): McpServer {
     },
     async ({ item_id }) => {
       try {
-        const res = await client.removeShoppingListItem(item_id);
+        const res = await c.removeShoppingListItem(item_id);
         return {
           content: [{ type: "text", text: JSON.stringify({ status: "ok", result: res }, null, 2) }],
         };
@@ -373,7 +376,7 @@ export function createServer(): McpServer {
     },
     async () => {
       try {
-        const lists = await client.getFavoriteLists();
+        const lists = await c.getFavoriteLists();
         return {
           content: [{ type: "text", text: JSON.stringify(lists, null, 2) }],
         };
@@ -398,7 +401,7 @@ export function createServer(): McpServer {
     },
     async ({ list_id, item_id, checked }) => {
       try {
-        const res = await client.setFavoriteListItemChecked(list_id, item_id, checked);
+        const res = await c.setFavoriteListItemChecked(list_id, item_id, checked);
         return {
           content: [{ type: "text", text: JSON.stringify({ status: "ok", result: res }, null, 2) }],
         };
@@ -422,7 +425,7 @@ export function createServer(): McpServer {
     },
     async ({ page, size }) => {
       try {
-        const receipts = await client.listReceipts(page, size);
+        const receipts = await c.listReceipts(page, size);
         return {
           content: [{ type: "text", text: JSON.stringify(receipts, null, 2) }],
         };
@@ -445,7 +448,7 @@ export function createServer(): McpServer {
     },
     async ({ transaction_id }) => {
       try {
-        const details = await client.getReceiptDetails(transaction_id);
+        const details = await c.getReceiptDetails(transaction_id);
         return {
           content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
         };
@@ -471,7 +474,7 @@ export function createServer(): McpServer {
     },
     async ({ days, min_times, limit }) => {
       try {
-        const digest = await client.getPromoDigest({ days, minTimes: min_times, limit });
+        const digest = await c.getPromoDigest({ days, minTimes: min_times, limit });
         return {
           content: [{ type: "text", text: JSON.stringify(digest, null, 2) }],
         };
@@ -495,7 +498,7 @@ export function createServer(): McpServer {
     },
     async ({ query, limit }) => {
       try {
-        const recipes = await client.searchRecipes(query, 0, limit);
+        const recipes = await c.searchRecipes(query, 0, limit);
         return {
           content: [{ type: "text", text: JSON.stringify(recipes, null, 2) }],
         };
@@ -518,7 +521,7 @@ export function createServer(): McpServer {
     },
     async ({ recipe_id }) => {
       try {
-        const details = await client.getRecipeDetails(recipe_id);
+        const details = await c.getRecipeDetails(recipe_id);
         return {
           content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
         };
@@ -541,7 +544,7 @@ export function createServer(): McpServer {
     },
     async ({ query }) => {
       try {
-        const stores = await client.searchStores(query);
+        const stores = await c.searchStores(query);
         return {
           content: [{ type: "text", text: JSON.stringify(stores, null, 2) }],
         };
@@ -564,9 +567,145 @@ export function createServer(): McpServer {
     },
     async ({ store_id }) => {
       try {
-        const bargains = await client.getClearanceBargains(store_id);
+        const bargains = await c.getClearanceBargains(store_id);
         return {
           content: [{ type: "text", text: JSON.stringify(bargains, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 21. Tool: Search Suggestions
+  server.registerTool(
+    "ah_get_search_suggestions",
+    {
+      title: "Get Search Suggestions",
+      description: "Get search autocompletion suggestions and related grocery query keywords from Albert Heijn.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({
+        query: z.string().describe("Search query prefix or keyword"),
+        limit: z.number().int().min(1).max(30).default(10).describe("Maximum suggestions to return (default 10)"),
+      }),
+    },
+    async ({ query, limit }) => {
+      try {
+        const suggestions = await c.getSearchSuggestions(query, limit);
+        return {
+          content: [{ type: "text", text: JSON.stringify(suggestions, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 22. Tool: Predictive Favorites
+  server.registerTool(
+    "ah_get_predictive_favorites",
+    {
+      title: "Get Predictive Favorites",
+      description: "Fetch predictive favorite recommendations and frequently reordered products predicted by Albert Heijn.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const favorites = await c.getPredictiveFavorites();
+        return {
+          content: [{ type: "text", text: JSON.stringify(favorites, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 23. Tool: Activate Personal Bonus Box
+  server.registerTool(
+    "ah_activate_personal_bonus",
+    {
+      title: "Activate Personal Bonus Offers",
+      description: "Activate selected weekly Bonus Box promotions for a given Bonus card number.",
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: z.object({
+        bonus_card_number: z.string().describe("13-digit Albert Heijn Bonus card number"),
+        selected_bonus_ids: z.array(z.number().int()).describe("Array of bonus offer IDs to activate"),
+      }),
+    },
+    async ({ bonus_card_number, selected_bonus_ids }) => {
+      try {
+        const result = await c.activatePersonalBonus(bonus_card_number, selected_bonus_ids);
+        return {
+          content: [{ type: "text", text: JSON.stringify({ status: "ok", result }, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 24. Tool: Get Products in Bulk
+  server.registerTool(
+    "ah_get_products_bulk",
+    {
+      title: "Get Products Bulk",
+      description: "Fetch product details in bulk for multiple Albert Heijn product IDs (e.g. ['wi196825', 'wi187593']).",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({
+        product_ids: z.array(z.string()).min(1).describe("List of product IDs (e.g. ['wi196825', 'wi187593'])"),
+      }),
+    },
+    async ({ product_ids }) => {
+      try {
+        const products = await c.getProductsBulk(product_ids);
+        return {
+          content: [{ type: "text", text: JSON.stringify(products, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 25. Tool: Get Subcategories
+  server.registerTool(
+    "ah_get_sub_categories",
+    {
+      title: "Get Subcategories",
+      description: "Fetch child subcategories for a specific supermarket category ID.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({
+        category_id: z.union([z.string(), z.number()]).describe("Category ID to retrieve subcategories for"),
+      }),
+    },
+    async ({ category_id }) => {
+      try {
+        const subCategories = await c.getSubCategories(category_id);
+        return {
+          content: [{ type: "text", text: JSON.stringify(subCategories, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 26. Tool: Get Active Online Cart
+  server.registerTool(
+    "ah_get_cart",
+    {
+      title: "Get Online Cart",
+      description: "Read-only view of the user's active Albert Heijn online shopping cart and order summary.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const cart = await c.getCart();
+        return {
+          content: [{ type: "text", text: JSON.stringify(cart, null, 2) }],
         };
       } catch (error: any) {
         return toolError(error);
@@ -598,7 +737,20 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`Fatal error: ${err.message}\n`);
-  process.exit(1);
-});
+function isDirectExecution(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    const scriptPath = fs.realpathSync(path.resolve(process.argv[1]));
+    const modulePath = fs.realpathSync(fileURLToPath(import.meta.url));
+    return scriptPath === modulePath;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution() && !process.env.NODE_TEST_CONTEXT) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal error: ${err.message}\n`);
+    process.exit(1);
+  });
+}

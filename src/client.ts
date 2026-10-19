@@ -18,7 +18,7 @@ export class AhClient {
     this.baseUrl = baseUrl;
   }
 
-  private async request<T = any>(
+  async request<T = any>(
     endpoint: string,
     options: { method?: string; body?: any; query?: Record<string, any> } = {}
   ): Promise<T> {
@@ -58,7 +58,9 @@ export class AhClient {
 
     if (!resp.ok) {
       const errText = await resp.text();
-      throw new Error(`Albert Heijn API error (${resp.status}) at ${endpoint}: ${errText}`);
+      const err = new Error(`Albert Heijn API error (${resp.status}) at ${endpoint}: ${errText}`);
+      (err as any).status = resp.status;
+      throw err;
     }
 
     return (await resp.json()) as T;
@@ -414,42 +416,67 @@ export class AhClient {
    * 7. Allerhande Recipes
    */
   async searchRecipes(query: string, page: number = 0, size: number = 10): Promise<Recipe[]> {
-    const data = await this.request<any>("/mobile-services/recipe/v2/search", {
-      query: { query, page, size },
-    });
-    const rawList = data.recipes || (Array.isArray(data) ? data : []);
-    return rawList.map((r: any) => ({
-      id: r.id,
-      title: r.title || r.name,
-      servings: r.servings,
-      prepTimeMinutes: r.prepTime || r.cookingTime,
-      imageUrl: r.image?.url || r.imageUrl,
-      ingredients: (r.ingredients || []).map((ing: any) => ({
-        name: ing.name || ing.ingredient,
-        amount: ing.amount,
-        unit: ing.unit,
-        productId: ing.productId,
-      })),
-    }));
+    try {
+      const data = await this.request<any>("/mobile-services/recipe/v2/search", {
+        query: { query, page, size },
+      });
+      const rawList = data.recipes || (Array.isArray(data) ? data : []);
+      return rawList.map((r: any) => ({
+        id: r.id,
+        title: r.title || r.name,
+        servings: r.servings,
+        prepTimeMinutes: r.prepTime || r.cookingTime,
+        imageUrl: r.image?.url || r.imageUrl,
+        ingredients: (r.ingredients || []).map((ing: any) => ({
+          name: ing.name || ing.ingredient,
+          amount: ing.amount,
+          unit: ing.unit,
+          productId: ing.productId,
+        })),
+      }));
+    } catch (error: any) {
+      if (
+        error?.status === 404 ||
+        error?.message?.includes("(404)") ||
+        error?.message?.toLowerCase().includes("not found")
+      ) {
+        return [];
+      }
+      throw error;
+    }
   }
 
-  async getRecipeDetails(recipeId: string | number): Promise<Recipe> {
-    const data = await this.request<any>(`/mobile-services/recipe/v2/${recipeId}`);
-    return {
-      id: data.id || recipeId,
-      title: data.title || data.name,
-      servings: data.servings,
-      prepTimeMinutes: data.prepTime || data.cookingTime,
-      imageUrl: data.image?.url || data.imageUrl,
-      instructions: data.instructions || data.steps || [],
-      ingredients: (data.ingredients || []).map((ing: any) => ({
-        name: ing.name || ing.ingredient,
-        amount: ing.amount,
-        unit: ing.unit,
-        productId: ing.productId,
-        available: ing.available,
-      })),
-    };
+  async getRecipeDetails(recipeId: string | number): Promise<Recipe | { error: string; message: string }> {
+    try {
+      const data = await this.request<any>(`/mobile-services/recipe/v2/${recipeId}`);
+      return {
+        id: data.id || recipeId,
+        title: data.title || data.name,
+        servings: data.servings,
+        prepTimeMinutes: data.prepTime || data.cookingTime,
+        imageUrl: data.image?.url || data.imageUrl,
+        instructions: data.instructions || data.steps || [],
+        ingredients: (data.ingredients || []).map((ing: any) => ({
+          name: ing.name || ing.ingredient,
+          amount: ing.amount,
+          unit: ing.unit,
+          productId: ing.productId,
+          available: ing.available,
+        })),
+      };
+    } catch (error: any) {
+      if (
+        error?.status === 404 ||
+        error?.message?.includes("(404)") ||
+        error?.message?.toLowerCase().includes("not found")
+      ) {
+        return {
+          error: "Not Found",
+          message: `Recipe not found for ID: ${recipeId}`,
+        };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -505,7 +532,7 @@ export class AhClient {
     });
   }
 
-  private mapProduct(raw: any): AhProduct {
+  mapProduct(raw: any): AhProduct {
     const current = raw.currentPrice ?? raw.price?.now;
     const regular = raw.priceBeforeBonus ?? raw.price?.was ?? raw.previousPrice;
     const isDiscounted =
