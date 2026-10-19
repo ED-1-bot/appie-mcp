@@ -169,6 +169,12 @@ describe("client.ts - response cache", () => {
       const url = String(input);
       calls.push(url);
 
+      if (url.includes("/mobile-services/product/detail/v4/products/bulk")) {
+        return json([{ id: 196825, title: "Test Product" }]);
+      }
+      if (url.includes("/mobile-services/product/detail/v4/products/") && url.includes("/alternatives")) {
+        return json([{ id: 196826, title: "Alt Product" }]);
+      }
       if (url.includes("/mobile-services/product/detail/v4/products/")) {
         return json({ productCard: { id: 196825, title: "Test Product" } });
       }
@@ -225,6 +231,18 @@ describe("client.ts - response cache", () => {
     const stats = client.cacheStats();
     assert.equal(stats.hits, 1);
     assert.equal(stats.entries, 1);
+  });
+
+  it("caches bulk product details and product alternatives", async () => {
+    const client = new AhClient("https://api.ah.nl");
+
+    await client.getProductsBulk(["wi196825", "wi187593"]);
+    await client.getProductsBulk(["wi196825", "wi187593"]);
+    assert.equal(calls.length, 1, "bulk product cards are cached");
+
+    await client.getProductAlternatives("wi196825");
+    await client.getProductAlternatives("wi196825");
+    assert.equal(calls.length, 2, "product alternatives are cached");
   });
 
   it("serves a repeated product search from the cache", async () => {
@@ -376,6 +394,16 @@ describe("client.ts - response cache", () => {
 
     await assert.rejects(() => client.getReceiptDetails("tx-missing"));
     await assert.rejects(() => client.getReceiptDetails("tx-missing"));
+
+    assert.equal(client.cacheStats().entries, 0);
+  });
+
+  it("does not cache an unknown store's clearance list", async () => {
+    const client = new AhClient("https://api.ah.nl");
+    globalThis.fetch = async () => json({ data: { store: null } });
+
+    await client.getClearanceBargains(4242);
+    await client.getClearanceBargains(4242);
 
     assert.equal(client.cacheStats().entries, 0);
   });

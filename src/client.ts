@@ -87,7 +87,14 @@ export class AhClient {
           shouldCache: (payload: any) => Boolean(payload?.data?.posReceiptDetails),
         };
       }
-      if (operationName === "GetBargainItems") return { ttl: CACHE_TTL.offers };
+      if (operationName === "GetBargainItems") {
+        return {
+          ttl: CACHE_TTL.offers,
+          // An unknown store answers with a null store; that must stay
+          // retryable instead of being replayed as "no bargains".
+          shouldCache: (payload: any) => Boolean(payload?.data?.store),
+        };
+      }
       // FetchMember (profile) and FetchPosReceiptsPage (receipt overview) are
       // live-only: they carry personal data or a list that changes.
       return null;
@@ -104,8 +111,7 @@ export class AhClient {
     if (endpoint.startsWith("/mobile-services/product/detail/v4/products")) {
       return {
         ttl: CACHE_TTL.productDetail,
-        shouldCache: (payload: any) =>
-          Boolean(payload?.productCard?.id ?? payload?.productCard?.webshopId ?? payload?.id),
+        shouldCache: AhClient.isCacheableProductPayload,
       };
     }
     if (endpoint.startsWith("/mobile-services/v1/product-shelves/categories")) {
@@ -129,6 +135,20 @@ export class AhClient {
 
     // Shopping list, favorite lists, cart and every unknown route stay live.
     return null;
+  }
+
+  /**
+   * A product payload is cacheable only when it actually carries a product.
+   * The detail route answers `{ productCard }`, the alternatives route an
+   * array, and the bulk route an array or `{ products: [...] }` — a payload
+   * that carries none of these is a failed lookup, not a product.
+   */
+  private static isCacheableProductPayload(payload: any): boolean {
+    if (Array.isArray(payload)) return payload.length > 0;
+    if (Array.isArray(payload?.products)) return payload.products.length > 0;
+    return Boolean(
+      payload?.productCard?.id ?? payload?.productCard?.webshopId ?? payload?.id
+    );
   }
 
   private cacheKeyFor(
