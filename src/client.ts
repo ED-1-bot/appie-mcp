@@ -70,13 +70,47 @@ export class AhClient {
    * 1. Member Profile & Bonus Card
    */
   async getProfile(): Promise<MemberProfile> {
-    const data = await this.request<any>("/mobile-services/member/v1/profile");
+    const graphqlQuery = {
+      query: `query FetchMember {
+        member {
+          id
+          emailAddress
+          name {
+            first
+            last
+          }
+          loyaltyCards {
+            loyaltyCards {
+              cardNumber
+              type
+              barcodeNumber
+            }
+          }
+        }
+      }`,
+      operationName: "FetchMember",
+    };
+
+    const resp = await this.request<any>("/graphql", {
+      method: "POST",
+      body: graphqlQuery,
+    });
+
+    const member = resp.data?.member;
+    if (!member) {
+      return {};
+    }
+
+    const cards = member.loyaltyCards?.loyaltyCards || [];
+    const bonusCard = cards.find((c: any) => c.type === "BONUS") || cards[0];
+    const fullName = [member.name?.first, member.name?.last].filter(Boolean).join(" ").trim() || undefined;
+
     return {
-      name: data.name || `${data.firstName || ""} ${data.lastName || ""}`.trim() || undefined,
-      email: data.email,
-      bonusCardNumber: data.bonusCardNumber || data.bonusCard?.cardNumber,
-      hasBonusCard: Boolean(data.hasBonusCard || data.bonusCardNumber),
-      memberId: data.memberId || data.id,
+      name: fullName,
+      email: member.emailAddress || undefined,
+      bonusCardNumber: bonusCard?.cardNumber || bonusCard?.barcodeNumber || undefined,
+      hasBonusCard: Boolean(bonusCard?.cardNumber || bonusCard?.barcodeNumber),
+      memberId: member.id !== undefined && member.id !== null ? String(member.id) : undefined,
     };
   }
 
@@ -204,23 +238,55 @@ export class AhClient {
    * 4. Shopping Lists (Main & Favorites)
    */
   async getShoppingList(): Promise<ShoppingList> {
-    const data = await this.request<any>("/mobile-services/shoppinglist/v2");
-    const rawItems = data.items || [];
-    const items: ShoppingListItem[] = rawItems.map((item: any) => ({
-      id: item.id || item.listItemId,
-      type: item.type || (item.product ? "PRODUCT" : "FREE_TEXT"),
-      text: item.text || item.product?.title,
-      productId: item.productId || item.product?.id,
-      product: item.product ? this.mapProduct(item.product) : undefined,
-      quantity: item.quantity || 1,
-      checked: Boolean(item.checked),
-    }));
+    try {
+      const data = await this.request<any>("/mobile-services/shoppinglist/v2");
+      const rawItems = data.items || [];
+      const items: ShoppingListItem[] = rawItems.map((item: any) => ({
+        id: item.id || item.listItemId,
+        type: item.type || (item.product ? "PRODUCT" : "FREE_TEXT"),
+        text: item.text || item.product?.title,
+        productId: item.productId || item.product?.id,
+        product: item.product ? this.mapProduct(item.product) : undefined,
+        quantity: item.quantity || 1,
+        checked: Boolean(item.checked),
+      }));
 
-    return {
-      id: data.id,
-      items,
-      totalItems: items.length,
-    };
+      return {
+        id: data.id,
+        items,
+        totalItems: items.length,
+      };
+    } catch (err: any) {
+      if (err.status === 404) {
+        try {
+          const profile = await this.getProfile();
+          if (profile.bonusCardNumber) {
+            const data = await this.request<any>(
+              `https://api.ah.nl/handscanner/v1/lists?bonusCardNumber=${profile.bonusCardNumber}`
+            );
+            const list = (data.lists || [])[0] || {};
+            const rawItems = list.items || [];
+            const items: ShoppingListItem[] = rawItems.map((item: any) => ({
+              id: item.id || item.listItemId,
+              type: item.type || (item.product ? "PRODUCT" : "FREE_TEXT"),
+              text: item.text || item.product?.title,
+              productId: item.productId || item.product?.id,
+              product: item.product ? this.mapProduct(item.product) : undefined,
+              quantity: item.quantity || 1,
+              checked: Boolean(item.checked),
+            }));
+            return {
+              id: list.id,
+              items,
+              totalItems: items.length,
+            };
+          }
+        } catch {
+          // ignore fallback error and throw original error
+        }
+      }
+      throw err;
+    }
   }
 
   async addShoppingListItems(
@@ -305,40 +371,119 @@ export class AhClient {
    * 5. Digital Receipts (Kassabonnen)
    */
   async listReceipts(page: number = 0, size: number = 10): Promise<Receipt[]> {
-    const data = await this.request<any[]>("/mobile-services/v1/receipts", {
-      query: { page, size },
-    });
-    if (!Array.isArray(data)) return [];
+    const graphqlQuery = {
+      query: `query FetchPosReceiptsPage {
+        posReceiptsPage {
+          pagination {
+            totalElements
+          }
+          posReceipts {
+            id
+            dateTime
+            storeAddress {
+              street
+              houseNumber
+              postalCode
+              city
+            }
+            totalAmount {
+              amount
+            }
+          }
+        }
+      }`,
+      operationName: "FetchPosReceiptsPage",
+    };
 
-    return data.map((r: any) => ({
-      transactionId: r.transactionId || r.id,
-      transactionDate: r.transactionDate || r.date,
-      total: r.total?.amount ?? r.totalAmount ?? 0,
-      totalDiscount: r.totalDiscount?.amount,
-      storeId: r.storeId,
-      storeName: r.storeName || r.store?.name,
-    }));
+    const resp = await this.request<any>("/graphql", {
+      method: "POST",
+      body: graphqlQuery,
+    });
+
+    const rawList = resp.data?.posReceiptsPage?.posReceipts || [];
+    if (!Array.isArray(rawList)) return [];
+
+    const mapped: Receipt[] = rawList.map((r: any) => {
+      const addr = r.storeAddress;
+      const storeName = addr
+        ? `AH ${addr.street || ""}${addr.houseNumber ? " " + addr.houseNumber : ""}${addr.city ? ", " + addr.city : ""}`.trim()
+        : undefined;
+
+      return {
+        transactionId: r.id,
+        transactionDate: r.dateTime,
+        total: r.totalAmount?.amount ?? 0,
+        storeName: storeName || undefined,
+      };
+    });
+
+    const start = page * size;
+    return mapped.slice(start, start + size);
   }
 
   async getReceiptDetails(transactionId: string): Promise<Receipt> {
-    const data = await this.request<any>(
-      `/mobile-services/v2/receipts/${transactionId}`
-    );
-    const rawLines = data.lines || data.receiptLines || [];
+    const graphqlQuery = {
+      query: `query FetchPosReceiptsDetails($id: String!) {
+        posReceiptDetails(id: $id) {
+          total {
+            amount
+          }
+          subtotalProducts {
+            amount {
+              amount
+            }
+          }
+          subtotalDiscount {
+            amount
+          }
+          transaction {
+            dateTime
+          }
+          products {
+            name
+            quantity
+            amount {
+              amount
+            }
+            price {
+              amount
+            }
+          }
+        }
+      }`,
+      variables: { id: transactionId },
+      operationName: "FetchPosReceiptsDetails",
+    };
+
+    const resp = await this.request<any>("/graphql", {
+      method: "POST",
+      body: graphqlQuery,
+    });
+
+    const details = resp.data?.posReceiptDetails;
+    if (!details) {
+      throw new Error(`Receipt details not found for transaction ID: ${transactionId}`);
+    }
+
+    const rawProducts = details.products || [];
+    const lines = rawProducts.map((p: any) => {
+      const lineTotal = p.amount?.amount ?? 0;
+      const unitPrice =
+        p.price?.amount ?? (p.quantity && p.quantity > 1 ? lineTotal / p.quantity : lineTotal);
+      return {
+        description: p.name || "",
+        quantity: p.quantity ?? 1,
+        price: lineTotal,
+        unitPrice: unitPrice,
+      };
+    });
+
     return {
-      transactionId: data.transactionId || transactionId,
-      transactionDate: data.transactionDate || data.date,
-      total: data.total?.amount ?? data.totalAmount ?? 0,
-      totalDiscount: data.totalDiscount?.amount,
-      storeId: data.storeId,
-      storeName: data.storeName,
-      lines: rawLines.map((l: any) => ({
-        description: l.description || l.text || l.productTitle || "",
-        quantity: l.quantity || 1,
-        price: l.amount?.amount ?? l.price ?? 0,
-        discount: l.discount?.amount ?? l.discountAmount,
-        unitPrice: l.unitPrice?.amount,
-      })),
+      transactionId,
+      transactionDate: details.transaction?.dateTime || "",
+      total: details.total?.amount ?? 0,
+      totalDiscount: details.subtotalDiscount?.amount,
+      lines,
     };
   }
 

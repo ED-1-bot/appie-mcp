@@ -1,3 +1,19 @@
+# Release Notes: appie-mcp v0.2.0
+
+We are pleased to announce **appie-mcp (v0.2.0)**. This release migrates customer profile and digital receipts endpoints from retired Albert Heijn legacy REST routes to AH's official GraphQL surface, resolving 404 NOT_FOUND errors.
+
+---
+
+## 🌟 What's New in v0.2.0
+
+- **GraphQL Profile Service (`FetchMember`)**: Replaces the deprecated `/mobile-services/member/v1/profile` (which returned 404) with Albert Heijn's GraphQL `FetchMember` operation. Accurately retrieves customer name, email address, member ID, and 13-digit Bonus card number.
+- **GraphQL Digital Receipts Service (`FetchPosReceiptsPage`)**: Replaces deprecated `/mobile-services/v1/receipts` (which returned 404) with GraphQL `FetchPosReceiptsPage`. Restores historical receipts lookup, store locations, and purchase totals.
+- **GraphQL Receipt Line Items (`FetchPosReceiptsDetails`)**: Replaces deprecated `/mobile-services/v2/receipts/{id}` with GraphQL `FetchPosReceiptsDetails`. Resolves product names, quantities, unit prices, line totals, and discounts.
+- **Habit-Based Deals Restored (`ah_get_promo_digest`)**: With receipt parsing restored, proactive sales alerts mining past frequent grocery purchases against weekly national and personal Bonus deals are fully operational.
+- **Shopping List Fallback**: Added graceful fallback to the handscanner list endpoint (`handscanner/v1/lists`) if `/mobile-services/shoppinglist/v2` returns 404.
+
+---
+
 # Release Notes: appie-mcp v0.1.0
 
 We are pleased to announce the initial release of **appie-mcp (v0.1.0)**, an open-source Model Context Protocol (MCP) server for **Albert Heijn (Appie)**. This server enables AI assistants (such as Claude Desktop, Cursor, Continue, and autonomous coding agents) to interact directly with Albert Heijn's supermarket services.

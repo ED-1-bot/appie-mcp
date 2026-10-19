@@ -436,7 +436,7 @@ describe("client.ts - AhClient", () => {
         },
         (err: Error) => {
           assert.ok(err.message.includes("Albert Heijn API error (401)"));
-          assert.ok(err.message.includes("/mobile-services/member/v1/profile"));
+          assert.ok(err.message.includes("/graphql"));
           assert.ok(err.message.includes("Unauthorized token expired"));
           return true;
         }
@@ -508,12 +508,25 @@ describe("client.ts - AhClient", () => {
       globalThis.fetch = async () => {
         return new Response(
           JSON.stringify({
-            firstName: "Jan",
-            lastName: "Jansen",
-            email: "jan@example.com",
-            bonusCardNumber: "2620123456789",
-            hasBonusCard: true,
-            memberId: "mem_1001",
+            data: {
+              member: {
+                id: "mem_1001",
+                emailAddress: "jan@example.com",
+                name: {
+                  first: "Jan",
+                  last: "Jansen",
+                },
+                loyaltyCards: {
+                  loyaltyCards: [
+                    {
+                      cardNumber: "2620123456789",
+                      type: "BONUS",
+                      barcodeNumber: "2620123456789",
+                    },
+                  ],
+                },
+              },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -561,37 +574,50 @@ describe("client.ts - AhClient", () => {
     });
 
     it("listReceipts and getReceiptDetails map receipt and line item data", async () => {
-      // 1. listReceipts
-      globalThis.fetch = async (input) => {
-        const urlStr = String(input);
-        if (urlStr.includes("/mobile-services/v1/receipts")) {
+      globalThis.fetch = async (_input, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        if (body.operationName === "FetchPosReceiptsPage") {
           return new Response(
-            JSON.stringify([
-              {
-                transactionId: "tx_987",
-                transactionDate: "2026-10-15T12:30:00.000Z",
-                total: { amount: 15.5 },
-                totalDiscount: { amount: 2.5 },
-                storeName: "AH Amsterdam Dam",
+            JSON.stringify({
+              data: {
+                posReceiptsPage: {
+                  pagination: { totalElements: 1 },
+                  posReceipts: [
+                    {
+                      id: "tx_987",
+                      dateTime: "2026-10-15T12:30:00.000Z",
+                      totalAmount: { amount: 15.5 },
+                      storeAddress: {
+                        street: "Dam",
+                        houseNumber: "",
+                        city: "Amsterdam",
+                      },
+                    },
+                  ],
+                },
               },
-            ]),
+            }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );
         }
-        // 2. getReceiptDetails
+        // FetchPosReceiptsDetails
         return new Response(
           JSON.stringify({
-            transactionId: "tx_987",
-            transactionDate: "2026-10-15T12:30:00.000Z",
-            total: { amount: 15.5 },
-            lines: [
-              {
-                description: "Halfvolle Melk 1L",
-                quantity: 2,
-                amount: { amount: 2.58 },
-                unitPrice: { amount: 1.29 },
+            data: {
+              posReceiptDetails: {
+                total: { amount: 15.5 },
+                subtotalDiscount: { amount: 2.5 },
+                transaction: { dateTime: "2026-10-15T12:30:00.000Z" },
+                products: [
+                  {
+                    name: "Halfvolle Melk 1L",
+                    quantity: 2,
+                    amount: { amount: 2.58 },
+                    price: { amount: 1.29 },
+                  },
+                ],
               },
-            ],
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -601,11 +627,12 @@ describe("client.ts - AhClient", () => {
       assert.equal(receipts.length, 1);
       assert.equal(receipts[0].transactionId, "tx_987");
       assert.equal(receipts[0].total, 15.5);
-      assert.equal(receipts[0].totalDiscount, 2.5);
-      assert.equal(receipts[0].storeName, "AH Amsterdam Dam");
+      assert.equal(receipts[0].storeName, "AH Dam, Amsterdam");
 
       const details = await client.getReceiptDetails("tx_987");
       assert.equal(details.transactionId, "tx_987");
+      assert.equal(details.total, 15.5);
+      assert.equal(details.totalDiscount, 2.5);
       assert.equal(details.lines?.length, 1);
       assert.equal(details.lines?.[0].description, "Halfvolle Melk 1L");
       assert.equal(details.lines?.[0].quantity, 2);
