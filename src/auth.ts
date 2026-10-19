@@ -58,6 +58,10 @@ export function getTokensFilePath(): string {
   const globalConfig = path.join(os.homedir(), ".config", "appie-mcp", "tokens.json");
   if (fs.existsSync(globalConfig)) return globalConfig;
 
+  // 4. Fallback to container data dir (/data/tokens.json)
+  const containerData = "/data/tokens.json";
+  if (fs.existsSync(containerData)) return containerData;
+
   return projectFile;
 }
 
