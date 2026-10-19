@@ -150,6 +150,9 @@ export class AhClient {
     return cacheKey(`${method} ${endpoint}`, [
       scope,
       body.operationName ?? "",
+      // The document text is part of the key: two documents can share an
+      // operation name and variables while requesting different fields.
+      typeof body.query === "string" ? body.query : "",
       body.variables ?? {},
     ]);
   }

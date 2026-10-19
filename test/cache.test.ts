@@ -245,6 +245,31 @@ describe("client.ts - response cache", () => {
     assert.equal(calls.length, 2);
   });
 
+  it("does not share a cache entry between different GraphQL documents", async () => {
+    const client = new AhClient("https://api.ah.nl");
+
+    // Same operation name, same variables, different selection sets: the
+    // responses carry different fields and must not share an entry.
+    await client.request("/graphql", {
+      method: "POST",
+      body: {
+        query: "query GetBargainItems($storeId: Int!) { store { id } }",
+        operationName: "GetBargainItems",
+        variables: { storeId: 1 },
+      },
+    });
+    await client.request("/graphql", {
+      method: "POST",
+      body: {
+        query: "query GetBargainItems($storeId: Int!) { store { id name } }",
+        operationName: "GetBargainItems",
+        variables: { storeId: 1 },
+      },
+    });
+
+    assert.equal(calls.length, 2);
+  });
+
   it("caches receipt details but never the receipt overview list", async () => {
     const client = new AhClient("https://api.ah.nl");
 
