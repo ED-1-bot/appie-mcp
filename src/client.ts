@@ -1,4 +1,5 @@
 import { AUTH_CONFIG, authFetch, getValidAccessToken } from "./auth.js";
+import { CacheStats, TtlCache, cacheKey } from "./cache.js";
 import {
   AhProduct,
   BonusOffer,
@@ -11,14 +12,133 @@ import {
   StoreInfo,
 } from "./types.js";
 
+/**
+ * Cache TTLs in milliseconds. Only immutable or slow-moving upstream data is
+ * cached — user state (profile, cart, shopping lists, receipt overview) is
+ * always fetched live.
+ */
+export const CACHE_TTL = {
+  /** Search results and promo prices: offers churn daily. */
+  search: 30 * 60 * 1000,
+  /** Product detail: a product's page is stable for a day. */
+  productDetail: 24 * 60 * 60 * 1000,
+  /** Categories, stores, recipes: near-static reference data. */
+  catalog: 24 * 60 * 60 * 1000,
+  /** Bonus folder, personal bonus box, clearance, predictive favorites. */
+  offers: 30 * 60 * 1000,
+  /** A closed receipt is immutable; 30 days covers post-purchase corrections. */
+  receiptDetail: 30 * 24 * 60 * 60 * 1000,
+} as const;
+
 export class AhClient {
   private readonly baseUrl: string;
+  private readonly cache: TtlCache;
 
-  constructor(baseUrl: string = AUTH_CONFIG.api_base) {
+  constructor(baseUrl: string = AUTH_CONFIG.api_base, cache?: TtlCache) {
     this.baseUrl = baseUrl;
+    this.cache =
+      cache ??
+      new TtlCache({
+        enabled: process.env.APPIE_MCP_CACHE !== "off",
+        maxEntries: Number(process.env.APPIE_MCP_CACHE_MAX_ENTRIES ?? 500),
+      });
+  }
+
+  cacheStats(): CacheStats {
+    return this.cache.stats();
+  }
+
+  /**
+   * TTL for an endpoint, or `null` when the response must never be cached.
+   * Allowlist by route: a new endpoint is uncached until it is classified.
+   */
+  private cachePolicyFor(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> }
+  ): number | null {
+    const method = (options.method || "GET").toUpperCase();
+
+    if (method !== "GET") {
+      if (endpoint !== "/graphql") return null;
+      const operationName = options.body?.operationName;
+      if (operationName === "FetchPosReceiptsDetails") return CACHE_TTL.receiptDetail;
+      if (operationName === "GetBargainItems") return CACHE_TTL.offers;
+      // FetchMember (profile) and FetchPosReceiptsPage (receipt overview) are
+      // live-only: they carry personal data or a list that changes.
+      return null;
+    }
+
+    if (endpoint.startsWith("http")) return null;
+
+    if (endpoint.startsWith("/mobile-services/product/search/v2/suggestions")) {
+      return CACHE_TTL.search;
+    }
+    if (endpoint.startsWith("/mobile-services/product/search/v2")) {
+      return CACHE_TTL.search;
+    }
+    if (endpoint.startsWith("/mobile-services/product/detail/v4/products")) {
+      return CACHE_TTL.productDetail;
+    }
+    if (endpoint.startsWith("/mobile-services/v1/product-shelves/categories")) {
+      return CACHE_TTL.catalog;
+    }
+    if (endpoint.startsWith("/mobile-services/recipe/v2")) {
+      return CACHE_TTL.catalog;
+    }
+    if (endpoint.startsWith("/mobile-services/store/v1/stores")) {
+      return CACHE_TTL.catalog;
+    }
+    if (endpoint.startsWith("/mobile-services/bonus-group/v1/segments/")) {
+      return CACHE_TTL.offers;
+    }
+    if (endpoint.startsWith("/mobile-services/bonusbox/v1")) {
+      return CACHE_TTL.offers;
+    }
+    if (endpoint.startsWith("/favorieten/predictive-list")) {
+      return CACHE_TTL.offers;
+    }
+
+    // Shopping list, favorite lists, cart and every unknown route stay live.
+    return null;
+  }
+
+  private cacheKeyFor(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> }
+  ): string {
+    const method = (options.method || "GET").toUpperCase();
+
+    if (method === "GET") {
+      const query = Object.entries(options.query ?? {})
+        .filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => [k, String(v)] as [string, string])
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      return cacheKey(`${method} ${endpoint}`, [query]);
+    }
+
+    const body = options.body ?? {};
+    return cacheKey(`${method} ${endpoint}`, [
+      body.operationName ?? "",
+      body.variables ?? {},
+    ]);
   }
 
   async request<T = any>(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> } = {}
+  ): Promise<T> {
+    const ttl = this.cachePolicyFor(endpoint, options);
+    if (ttl === null) {
+      return await this.performRequest<T>(endpoint, options);
+    }
+
+    const key = this.cacheKeyFor(endpoint, options);
+    return await this.cache.wrap<T>(key, ttl, () =>
+      this.performRequest<T>(endpoint, options)
+    );
+  }
+
+  private async performRequest<T = any>(
     endpoint: string,
     options: { method?: string; body?: any; query?: Record<string, any> } = {}
   ): Promise<T> {
@@ -300,16 +420,20 @@ export class AhClient {
         quantity: i.quantity || 1,
       })),
     };
-    return await this.request<any>("/mobile-services/shoppinglist/v2/items", {
+    const res = await this.request<any>("/mobile-services/shoppinglist/v2/items", {
       method: "POST",
       body: payload,
     });
+    this.cache.invalidate("GET /mobile-services/shoppinglist");
+    return res;
   }
 
   async removeShoppingListItem(itemId: string | number): Promise<any> {
-    return await this.request<any>(`/mobile-services/shoppinglist/v2/items/${itemId}`, {
+    const res = await this.request<any>(`/mobile-services/shoppinglist/v2/items/${itemId}`, {
       method: "DELETE",
     });
+    this.cache.invalidate("GET /mobile-services/shoppinglist");
+    return res;
   }
 
   async getFavoriteLists(): Promise<FavoriteList[]> {
@@ -334,7 +458,7 @@ export class AhClient {
     listId: string,
     item: { productId: number; quantity?: number; originCode?: string }
   ): Promise<any> {
-    return await this.request<any>(`/mobile-services/lists/v3/lists/${listId}/items`, {
+    const res = await this.request<any>(`/mobile-services/lists/v3/lists/${listId}/items`, {
       method: "POST",
       body: {
         originCode: item.originCode || "SEARCH",
@@ -342,6 +466,8 @@ export class AhClient {
         quantity: item.quantity || 1,
       },
     });
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   async setFavoriteListItemChecked(
@@ -349,22 +475,26 @@ export class AhClient {
     itemId: string,
     checked: boolean = true
   ): Promise<any> {
-    return await this.request<any>(
+    const res = await this.request<any>(
       `/mobile-services/lists/v3/lists/${listId}/items/${itemId}`,
       {
         method: "PATCH",
         body: { checked },
       }
     );
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   async removeFavoriteListItem(listId: string, itemId: string): Promise<any> {
-    return await this.request<any>(
+    const res = await this.request<any>(
       `/mobile-services/lists/v3/lists/${listId}/items/${itemId}`,
       {
         method: "DELETE",
       }
     );
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   /**
@@ -668,13 +798,16 @@ export class AhClient {
   }
 
   async activatePersonalBonus(bonusCardNumber: string, selectedBonusIds: number[]): Promise<any> {
-    return await this.request<any>("https://api.ah.nl/handscanner/v1/bonuses", {
+    const res = await this.request<any>("https://api.ah.nl/handscanner/v1/bonuses", {
       method: "PATCH",
       body: {
         bonusCardNumber,
         selectedBonusIds,
       },
     });
+    this.cache.invalidate("GET /mobile-services/bonusbox");
+    this.cache.invalidate("GET /favorieten/predictive-list");
+    return res;
   }
 
   mapProduct(raw: any): AhProduct {

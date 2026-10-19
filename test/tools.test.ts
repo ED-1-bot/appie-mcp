@@ -43,6 +43,7 @@ describe("tools.test.ts - McpServer and Tool Registrations", () => {
       "ah_get_products_bulk",
       "ah_get_sub_categories",
       "ah_get_cart",
+      "ah_cache_stats",
     ];
 
     const actualToolKeys = Object.keys(registeredTools);
@@ -88,6 +89,7 @@ describe("tools.test.ts - McpServer and Tool Registrations", () => {
         "ah_get_products_bulk",
         "ah_get_sub_categories",
         "ah_get_cart",
+        "ah_cache_stats",
       ];
 
       for (const name of readOnlyTools) {

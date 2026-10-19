@@ -1,3 +1,37 @@
+# Release Notes: appie-mcp v0.3.0
+
+We are pleased to announce **appie-mcp (v0.3.0)**. This release adds a
+process-local TTL cache in front of the Albert Heijn API, cutting request
+volume and speeding up repeat lookups — with an explicit freshness policy that
+is disclosed in the README.
+
+---
+
+## 🌟 What's New in v0.3.0
+
+- **TTL Response Cache (`src/cache.ts`)**: A small in-memory cache with LRU
+  eviction, TTL expiry, namespace invalidation and single-flight coalescing,
+  hooked into the single HTTP choke point (`AhClient.request()`). No tool
+  surface changed for the cached calls.
+- **Allowlist Policy**: Only routes with a classified volatility are cached —
+  product detail and catalog reference data for 24 hours, search results and
+  Bonus/clearance offers for 30 minutes, closed receipt line items for 30 days.
+  Every new route is uncached until it is classified.
+- **Never Cached**: The member profile, the receipt **overview** list, shopping
+  lists, favorite lists and the active cart are always fetched live, so a
+  read-after-write can never serve stale personal state.
+- **Invalidation on Write**: Activating a personal Bonus Box drops the cached
+  Bonus Box and predictive favorites; shopping list and favorite list writes
+  drop their namespaces.
+- **Observability**: New read-only tool `ah_cache_stats` reports hits, misses,
+  hit rate, entries and evictions; `npm run status` prints the same counters.
+- **Kill Switch**: `APPIE_MCP_CACHE=off` disables the cache entirely,
+  `APPIE_MCP_CACHE_MAX_ENTRIES` caps its size (default 500).
+- **README Disclosure**: A new *Caching & Data Freshness* section documents
+  every TTL, what is never cached, and the staleness a caller can expect.
+
+---
+
 # Release Notes: appie-mcp v0.2.0
 
 We are pleased to announce **appie-mcp (v0.2.0)**. This release migrates customer profile and digital receipts endpoints from retired Albert Heijn legacy REST routes to AH's official GraphQL surface, resolving 404 NOT_FOUND errors.
