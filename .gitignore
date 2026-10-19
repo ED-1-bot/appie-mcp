@@ -23,6 +23,7 @@ browser_profile/
 .DS_Store
 Thumbs.db
 
-# Postman collections (local only)
+# Postman collections & environments (local only)
 postman/
 *.postman_collection.json
+*.postman_environment.json
