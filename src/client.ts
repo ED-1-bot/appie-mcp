@@ -33,6 +33,7 @@ export const CACHE_TTL = {
 export class AhClient {
   private readonly baseUrl: string;
   private readonly cache: TtlCache;
+  private lastAuthScope: string | null = null;
 
   constructor(baseUrl: string = AUTH_CONFIG.api_base, cache?: TtlCache) {
     this.baseUrl = baseUrl;
@@ -49,20 +50,44 @@ export class AhClient {
   }
 
   /**
+   * Fingerprint of the credential in use. It keeps a re-login (a new token
+   * file) from serving the previous account's cached data, and it clears the
+   * cache when the principal actually changes. The raw token never appears in
+   * the key: only its digest does.
+   */
+  private authScope(token: string): string {
+    const scope = token ? cacheKey("auth", [token]).split(" ").pop()! : "anonymous";
+    if (this.lastAuthScope !== null && this.lastAuthScope !== scope) {
+      this.cache.clear();
+    }
+    this.lastAuthScope = scope;
+    return scope;
+  }
+
+  /**
    * TTL for an endpoint, or `null` when the response must never be cached.
    * Allowlist by route: a new endpoint is uncached until it is classified.
+   *
+   * `shouldCache` rejects a *successful* response that carries a domain-level
+   * failure (a null receipt, an empty product card). Such a payload must stay
+   * retryable instead of being replayed for the whole TTL.
    */
   private cachePolicyFor(
     endpoint: string,
     options: { method?: string; body?: any; query?: Record<string, any> }
-  ): number | null {
+  ): { ttl: number; shouldCache?: (payload: any) => boolean } | null {
     const method = (options.method || "GET").toUpperCase();
 
     if (method !== "GET") {
       if (endpoint !== "/graphql") return null;
       const operationName = options.body?.operationName;
-      if (operationName === "FetchPosReceiptsDetails") return CACHE_TTL.receiptDetail;
-      if (operationName === "GetBargainItems") return CACHE_TTL.offers;
+      if (operationName === "FetchPosReceiptsDetails") {
+        return {
+          ttl: CACHE_TTL.receiptDetail,
+          shouldCache: (payload: any) => Boolean(payload?.data?.posReceiptDetails),
+        };
+      }
+      if (operationName === "GetBargainItems") return { ttl: CACHE_TTL.offers };
       // FetchMember (profile) and FetchPosReceiptsPage (receipt overview) are
       // live-only: they carry personal data or a list that changes.
       return null;
@@ -71,31 +96,35 @@ export class AhClient {
     if (endpoint.startsWith("http")) return null;
 
     if (endpoint.startsWith("/mobile-services/product/search/v2/suggestions")) {
-      return CACHE_TTL.search;
+      return { ttl: CACHE_TTL.search };
     }
     if (endpoint.startsWith("/mobile-services/product/search/v2")) {
-      return CACHE_TTL.search;
+      return { ttl: CACHE_TTL.search };
     }
     if (endpoint.startsWith("/mobile-services/product/detail/v4/products")) {
-      return CACHE_TTL.productDetail;
+      return {
+        ttl: CACHE_TTL.productDetail,
+        shouldCache: (payload: any) =>
+          Boolean(payload?.productCard?.id ?? payload?.productCard?.webshopId ?? payload?.id),
+      };
     }
     if (endpoint.startsWith("/mobile-services/v1/product-shelves/categories")) {
-      return CACHE_TTL.catalog;
+      return { ttl: CACHE_TTL.catalog };
     }
     if (endpoint.startsWith("/mobile-services/recipe/v2")) {
-      return CACHE_TTL.catalog;
+      return { ttl: CACHE_TTL.catalog };
     }
     if (endpoint.startsWith("/mobile-services/store/v1/stores")) {
-      return CACHE_TTL.catalog;
+      return { ttl: CACHE_TTL.catalog };
     }
     if (endpoint.startsWith("/mobile-services/bonus-group/v1/segments/")) {
-      return CACHE_TTL.offers;
+      return { ttl: CACHE_TTL.offers };
     }
     if (endpoint.startsWith("/mobile-services/bonusbox/v1")) {
-      return CACHE_TTL.offers;
+      return { ttl: CACHE_TTL.offers };
     }
     if (endpoint.startsWith("/favorieten/predictive-list")) {
-      return CACHE_TTL.offers;
+      return { ttl: CACHE_TTL.offers };
     }
 
     // Shopping list, favorite lists, cart and every unknown route stay live.
@@ -104,7 +133,8 @@ export class AhClient {
 
   private cacheKeyFor(
     endpoint: string,
-    options: { method?: string; body?: any; query?: Record<string, any> }
+    options: { method?: string; body?: any; query?: Record<string, any> },
+    scope: string
   ): string {
     const method = (options.method || "GET").toUpperCase();
 
@@ -113,11 +143,12 @@ export class AhClient {
         .filter(([, v]) => v !== undefined && v !== null && v !== "")
         .map(([k, v]) => [k, String(v)] as [string, string])
         .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-      return cacheKey(`${method} ${endpoint}`, [query]);
+      return cacheKey(`${method} ${endpoint}`, [scope, query]);
     }
 
     const body = options.body ?? {};
     return cacheKey(`${method} ${endpoint}`, [
+      scope,
       body.operationName ?? "",
       body.variables ?? {},
     ]);
@@ -127,22 +158,28 @@ export class AhClient {
     endpoint: string,
     options: { method?: string; body?: any; query?: Record<string, any> } = {}
   ): Promise<T> {
-    const ttl = this.cachePolicyFor(endpoint, options);
-    if (ttl === null) {
+    const policy = this.cachePolicyFor(endpoint, options);
+    if (policy === null) {
       return await this.performRequest<T>(endpoint, options);
     }
 
-    const key = this.cacheKeyFor(endpoint, options);
-    return await this.cache.wrap<T>(key, ttl, () =>
-      this.performRequest<T>(endpoint, options)
+    const token = await getValidAccessToken();
+    const scope = this.authScope(token);
+    const key = this.cacheKeyFor(endpoint, options, scope);
+    return await this.cache.wrap<T>(
+      key,
+      policy.ttl,
+      () => this.performRequest<T>(endpoint, options, token),
+      policy.shouldCache
     );
   }
 
   private async performRequest<T = any>(
     endpoint: string,
-    options: { method?: string; body?: any; query?: Record<string, any> } = {}
+    options: { method?: string; body?: any; query?: Record<string, any> } = {},
+    token?: string
   ): Promise<T> {
-    const token = await getValidAccessToken();
+    const authToken = token ?? (await getValidAccessToken());
     const method = options.method || "GET";
 
     let urlStr = endpoint.startsWith("http") ? endpoint : `${this.baseUrl}${endpoint}`;
@@ -160,7 +197,7 @@ export class AhClient {
     }
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       Accept: "application/json",
     };
 

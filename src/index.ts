@@ -53,9 +53,9 @@ async function showStatus(): Promise<void> {
   console.log("\nVerifying live API connection...");
   const cacheStats = client.cacheStats();
   console.log(
-    `Response cache: ${cacheStats.enabled ? "enabled" : "disabled"} — ${cacheStats.entries} entries, ` +
-      `${cacheStats.hits} hits / ${cacheStats.misses} misses ` +
-      `(hit rate ${(cacheStats.hitRate * 100).toFixed(1)}%)`
+    `Response cache: ${cacheStats.enabled ? "enabled" : "disabled"} — ` +
+      `max ${cacheStats.maxEntries} entries. ` +
+      `Call ah_cache_stats for live hit/miss counters of the running server.`
   );
   try {
     const prof = await client.getProfile();

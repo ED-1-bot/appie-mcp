@@ -24,7 +24,15 @@ is disclosed in the README.
   Bonus Box and predictive favorites; shopping list and favorite list writes
   drop their namespaces.
 - **Observability**: New read-only tool `ah_cache_stats` reports hits, misses,
-  hit rate, entries and evictions; `npm run status` prints the same counters.
+  hit rate, entries and evictions. `npm run status` prints the cache
+  *configuration* (enabled state and size cap) — it runs in its own process, so
+  only the tool can report the running server's counters.
+- **Review Hardening**: Cache entries are scoped to the authenticated
+  principal (a re-login can never read the previous account's cached data),
+  a failed response is never cached, a response carrying a domain-level failure
+  (a null receipt, an empty product card) stays retryable instead of being
+  replayed for the whole TTL, and an invalid size cap falls back to the
+  default instead of silently disabling eviction.
 - **Kill Switch**: `APPIE_MCP_CACHE=off` disables the cache entirely,
   `APPIE_MCP_CACHE_MAX_ENTRIES` caps its size (default 500).
 - **README Disclosure**: A new *Caching & Data Freshness* section documents

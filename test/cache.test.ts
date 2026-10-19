@@ -325,4 +325,38 @@ describe("client.ts - response cache", () => {
 
     assert.equal(calls.length, 1);
   });
+
+  it("scopes cache entries to the authenticated principal", async () => {
+    const client = new AhClient("https://api.ah.nl");
+
+    await client.getProduct("wi196825");
+    await client.getProduct("wi196825");
+    assert.equal(calls.length, 1);
+
+    // A re-login under another account must not read the previous cache.
+    saveTokens({
+      access_token: "another_account_token_99999",
+      expires_in: 7200,
+      saved_at: new Date().toISOString(),
+    });
+    await client.getProduct("wi196825");
+
+    assert.equal(calls.length, 2);
+  });
+
+  it("does not cache a receipt that cannot be resolved", async () => {
+    const client = new AhClient("https://api.ah.nl");
+    globalThis.fetch = async () =>
+      json({ data: { posReceiptDetails: null } });
+
+    await assert.rejects(() => client.getReceiptDetails("tx-missing"));
+    await assert.rejects(() => client.getReceiptDetails("tx-missing"));
+
+    assert.equal(client.cacheStats().entries, 0);
+  });
+
+  it("falls back to the default size cap when the configured one is invalid", () => {
+    const cache = new TtlCache({ maxEntries: Number("1k") });
+    assert.equal(cache.stats().maxEntries, 500);
+  });
 });
