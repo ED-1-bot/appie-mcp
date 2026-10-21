@@ -416,11 +416,14 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_list_receipts",
     {
       title: "List Albert Heijn Receipts",
-      description: "List recent in-store cash register receipts (kassabonnen) with date, store name, and transaction ID.",
+      description:
+        "List in-store cash register receipts (kassabonnen) with date, store name, and total. Pagination is real: page and size walk the whole history, and a size above 100 is fetched in 100-row windows.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         page: z.number().int().min(0).default(0).describe("Page number (default 0)"),
-        size: z.number().int().min(1).max(30).default(10).describe("Number of receipts to return (default 10)"),
+        size: z.number().int().min(1).max(500).default(10).describe(
+          "Number of receipts to return (default 10, max 500; above 100 is fetched in 100-row windows)"
+        ),
       }),
     },
     async ({ page, size }) => {

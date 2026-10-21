@@ -670,3 +670,121 @@ describe("client.ts - AhClient", () => {
     });
   });
 });
+
+describe("client.ts - AhClient.listReceipts pagination", () => {
+  let client: AhClient;
+  let tmpDir: string;
+  let originalTokensFile: string | undefined;
+  let originalFetch: typeof globalThis.fetch;
+  let calls: Array<{ offset: number; limit: number }>;
+
+  function receiptRows(offset: number, count: number): any[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `tx_${offset + i}`,
+      dateTime: "2026-10-15T12:30:00.000Z",
+      totalAmount: { amount: 10 + offset + i },
+      storeAddress: { street: "Dam", houseNumber: "1", city: "Amsterdam" },
+    }));
+  }
+
+  /** Fake upstream: serves `available` receipts starting at `offset`. */
+  function stubFeed(available: number): void {
+    globalThis.fetch = async (_input, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      assert.equal(body.operationName, "FetchPosReceiptsPage");
+      const paging = body.variables?.pagination;
+      assert.ok(paging, "pagination variables must be sent");
+      calls.push({ offset: paging.offset, limit: paging.limit });
+
+      const start = paging.offset;
+      const count = Math.max(0, Math.min(paging.limit, available - start));
+
+      return new Response(
+        JSON.stringify({
+          data: {
+            posReceiptsPage: {
+              pagination: { totalElements: available },
+              posReceipts: receiptRows(start, count),
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    };
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "appie-receipts-test-"));
+    originalTokensFile = process.env.APPIE_TOKENS_FILE;
+    process.env.APPIE_TOKENS_FILE = path.join(tmpDir, "tokens.json");
+    originalFetch = globalThis.fetch;
+    calls = [];
+
+    saveTokens({
+      access_token: "test_access_token_12345",
+      expires_in: 7200,
+      saved_at: new Date().toISOString(),
+    });
+
+    client = new AhClient("https://api.ah.nl");
+  });
+
+  afterEach(() => {
+    if (originalTokensFile !== undefined) {
+      process.env.APPIE_TOKENS_FILE = originalTokensFile;
+    } else {
+      delete process.env.APPIE_TOKENS_FILE;
+    }
+    globalThis.fetch = originalFetch;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Ignore
+    }
+  });
+
+  it("requests the page as an offset/limit window instead of slicing locally", async () => {
+    stubFeed(200);
+
+    const receipts = await client.listReceipts(2, 5);
+
+    assert.deepEqual(calls, [{ offset: 10, limit: 5 }]);
+    assert.deepEqual(
+      receipts.map((r) => r.transactionId),
+      ["tx_10", "tx_11", "tx_12", "tx_13", "tx_14"]
+    );
+  });
+
+  it("walks the feed in 100-row windows when more than one page is asked for", async () => {
+    stubFeed(400);
+
+    const receipts = await client.listReceipts(0, 250);
+
+    assert.deepEqual(calls, [
+      { offset: 0, limit: 100 },
+      { offset: 100, limit: 100 },
+      { offset: 200, limit: 50 },
+    ]);
+    assert.equal(receipts.length, 250);
+    assert.equal(receipts[0].transactionId, "tx_0");
+    assert.equal(receipts[249].transactionId, "tx_249");
+  });
+
+  it("stops when the feed is exhausted instead of padding the window", async () => {
+    stubFeed(3);
+
+    const receipts = await client.listReceipts(0, 20);
+
+    assert.equal(calls.length, 1);
+    assert.equal(receipts.length, 3);
+  });
+
+  it("returns an empty list for a page past the end of the feed", async () => {
+    stubFeed(12);
+
+    const receipts = await client.listReceipts(3, 10);
+
+    assert.deepEqual(calls, [{ offset: 30, limit: 10 }]);
+    assert.deepEqual(receipts, []);
+  });
+});

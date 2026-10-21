@@ -11,6 +11,12 @@ import {
   StoreInfo,
 } from "./types.js";
 
+/**
+ * Albert Heijn's receipt feed is offset/limit paginated and rejects a limit
+ * above 100, so larger windows have to be walked in server-sized chunks.
+ */
+const AH_RECEIPTS_MAX_LIMIT = 100;
+
 export class AhClient {
   private readonly baseUrl: string;
 
@@ -371,9 +377,17 @@ export class AhClient {
    * 5. Digital Receipts (Kassabonnen)
    */
   async listReceipts(page: number = 0, size: number = 10): Promise<Receipt[]> {
-    const graphqlQuery = {
-      query: `query FetchPosReceiptsPage {
-        posReceiptsPage {
+    const wanted = Math.max(1, Math.trunc(size));
+    const first = Math.max(0, Math.trunc(page)) * wanted;
+    const receipts: Receipt[] = [];
+
+    for (let fetched = 0; fetched < wanted; ) {
+      const limit = Math.min(wanted - fetched, AH_RECEIPTS_MAX_LIMIT);
+      const resp = await this.request<any>("/graphql", {
+        method: "POST",
+        body: {
+          query: `query FetchPosReceiptsPage($pagination: OffsetLimitPagination!) {
+        posReceiptsPage(pagination: $pagination) {
           pagination {
             totalElements
           }
@@ -392,33 +406,35 @@ export class AhClient {
           }
         }
       }`,
-      operationName: "FetchPosReceiptsPage",
-    };
+          variables: { pagination: { offset: first + fetched, limit } },
+          operationName: "FetchPosReceiptsPage",
+        },
+      });
 
-    const resp = await this.request<any>("/graphql", {
-      method: "POST",
-      body: graphqlQuery,
-    });
+      const rawList = resp.data?.posReceiptsPage?.posReceipts;
+      if (!Array.isArray(rawList) || rawList.length === 0) break;
 
-    const rawList = resp.data?.posReceiptsPage?.posReceipts || [];
-    if (!Array.isArray(rawList)) return [];
+      receipts.push(
+        ...rawList.map((r: any) => {
+          const addr = r.storeAddress;
+          const storeName = addr
+            ? `AH ${addr.street || ""}${addr.houseNumber ? " " + addr.houseNumber : ""}${addr.city ? ", " + addr.city : ""}`.trim()
+            : undefined;
 
-    const mapped: Receipt[] = rawList.map((r: any) => {
-      const addr = r.storeAddress;
-      const storeName = addr
-        ? `AH ${addr.street || ""}${addr.houseNumber ? " " + addr.houseNumber : ""}${addr.city ? ", " + addr.city : ""}`.trim()
-        : undefined;
+          return {
+            transactionId: r.id,
+            transactionDate: r.dateTime,
+            total: r.totalAmount?.amount ?? 0,
+            storeName: storeName || undefined,
+          };
+        })
+      );
 
-      return {
-        transactionId: r.id,
-        transactionDate: r.dateTime,
-        total: r.totalAmount?.amount ?? 0,
-        storeName: storeName || undefined,
-      };
-    });
+      fetched += rawList.length;
+      if (rawList.length < limit) break;
+    }
 
-    const start = page * size;
-    return mapped.slice(start, start + size);
+    return receipts;
   }
 
   async getReceiptDetails(transactionId: string): Promise<Receipt> {
