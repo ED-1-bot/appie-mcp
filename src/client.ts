@@ -17,6 +17,13 @@ import {
  */
 const AH_RECEIPTS_MAX_LIMIT = 100;
 
+/**
+ * How far the promo digest may walk back: pages of 50 receipts, bounded because
+ * every receipt in the window costs one details call.
+ */
+const AH_DIGEST_PAGE_SIZE = 50;
+const AH_DIGEST_MAX_RECEIPTS = 150;
+
 export class AhClient {
   private readonly baseUrl: string;
 
@@ -191,11 +198,12 @@ export class AhClient {
   /**
    * 3. Bonus Deals & Promotions
    */
-  async getBonusOffers(query: string = ""): Promise<AhProduct[]> {
+  async getBonusOffers(query: string = "", page: number = 0, size: number = 30): Promise<AhProduct[]> {
     const res = await this.searchProducts({
       query,
       bonusOnly: true,
-      size: 30,
+      page,
+      size,
     });
     return res.products;
   }
@@ -437,6 +445,28 @@ export class AhClient {
     return receipts;
   }
 
+  /**
+   * Receipts newer than `cutoff`, oldest last. The digest used to read a fixed
+   * window of 30 receipts, so a 365-day ask really only saw the newest 30 trips;
+   * this walks pages until the cutoff is crossed or `AH_DIGEST_MAX_RECEIPTS`
+   * bounds the walk, because every receipt costs one details call.
+   */
+  private async listReceiptsInWindow(cutoff: number): Promise<Receipt[]> {
+    const collected: Receipt[] = [];
+
+    for (let page = 0; collected.length < AH_DIGEST_MAX_RECEIPTS; page++) {
+      const batch = await this.listReceipts(page, AH_DIGEST_PAGE_SIZE);
+      if (batch.length === 0) break;
+
+      collected.push(...batch);
+      const oldest = new Date(batch[batch.length - 1].transactionDate).getTime();
+      if (oldest < cutoff) break;
+      if (batch.length < AH_DIGEST_PAGE_SIZE) break;
+    }
+
+    return collected.slice(0, AH_DIGEST_MAX_RECEIPTS);
+  }
+
   async getReceiptDetails(transactionId: string): Promise<Receipt> {
     const graphqlQuery = {
       query: `query FetchPosReceiptsDetails($id: String!) {
@@ -516,8 +546,8 @@ export class AhClient {
     const minTimes = options.minTimes || 2;
     const limit = options.limit || 25;
 
-    const receipts = await this.listReceipts(0, 30);
     const cutoff = Date.now() - days * 86400 * 1000;
+    const receipts = await this.listReceiptsInWindow(cutoff);
     const itemCounts = new Map<string, { count: number; name: string }>();
 
     for (const r of receipts) {

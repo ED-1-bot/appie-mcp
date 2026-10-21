@@ -247,13 +247,19 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_bonus_offers",
     {
       title: "Get Albert Heijn Weekly Bonus Offers",
-      description: "Browse active national Bonus folder discounts, promotions (e.g. 1+1 gratis, 2e halve prijs), and validity windows.",
+      description:
+        "Browse active national Bonus folder discounts, promotions (e.g. 1+1 gratis, 2e halve prijs), and validity windows. The folder is far larger than one page: walk `page` with `limit` to see more of it.",
       annotations: { readOnlyHint: true },
-      inputSchema: z.object({}),
+      inputSchema: z.object({
+        page: z.number().int().min(0).default(0).describe("Page number (default 0)"),
+        limit: z.number().int().min(1).max(100).default(30).describe(
+          "Offers per page (default 30, max 100)"
+        ),
+      }),
     },
-    async () => {
+    async ({ page, limit }) => {
       try {
-        const offers = await c.getBonusOffers();
+        const offers = await c.getBonusOffers("", page, limit);
         return {
           content: [{ type: "text", text: JSON.stringify(offers, null, 2) }],
         };
@@ -467,7 +473,7 @@ export function createServer(customClient?: AhClient): McpServer {
     {
       title: "Get Albert Heijn Promo Digest",
       description:
-        "Answer 'of the things I frequently buy, what is on Bonus discount right now?'. Mines recent receipts and cross-references against active offers.",
+        "Answer 'of the things I frequently buy, what is on Bonus discount right now?'. Mines receipts inside the requested window — paging back to the oldest receipt that falls in it, up to 150 — and cross-references them against active offers.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         days: z.number().int().positive().max(365).default(90).describe("Days of receipt history to scan (default 90)"),

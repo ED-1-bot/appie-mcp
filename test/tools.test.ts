@@ -247,6 +247,20 @@ describe("tools.test.ts - McpServer and Tool Registrations", () => {
       }
     });
 
+    it("validates ah_get_bonus_offers input schema defaults", () => {
+      const server = createServer();
+      const schema = (server as any)._registeredTools["ah_get_bonus_offers"].inputSchema;
+
+      const parsed = schema.safeParse({});
+      assert.equal(parsed.success, true);
+      if (parsed.success) {
+        assert.equal(parsed.data.page, 0);
+        assert.equal(parsed.data.limit, 30);
+      }
+      assert.equal(schema.safeParse({ page: 3, limit: 100 }).success, true);
+      assert.equal(schema.safeParse({ limit: 101 }).success, false);
+    });
+
     it("validates ah_get_receipt_details input schema", () => {
       const server = createServer();
       const schema = (server as any)._registeredTools["ah_get_receipt_details"].inputSchema;
