@@ -2,8 +2,9 @@
 
 We are pleased to announce **appie-mcp (v0.3.0)**. This release adds a
 process-local TTL cache in front of the Albert Heijn API, cutting request
-volume and speeding up repeat lookups — with an explicit freshness policy that
-is disclosed in the README.
+volume and speeding up repeat lookups with an explicit freshness policy,
+alongside comprehensive feed pagination for receipts, weekly Bonus offers,
+and the promo digest.
 
 ---
 
@@ -27,6 +28,17 @@ is disclosed in the README.
   hit rate, entries and evictions. `npm run status` prints the cache
   *configuration* (enabled state and size cap) — it runs in its own process, so
   only the tool can report the running server's counters.
+- **Receipt Feed Pagination (`ah_list_receipts`)**: Switched to Albert Heijn's
+  GraphQL `OffsetLimitPagination` (offset, limit) to walk the full transaction
+  history in 100-row server windows. Supports `page` and `size` up to 500
+  without being truncated to the first 20 items.
+- **Bonus Folder Pagination (`ah_get_bonus_offers`)**: Added `page` and `limit`
+  (default 30, max 100) parameters, making the entire weekly Bonus folder
+  (>300 distinct deals) fully browsable.
+- **Full-Window Promo Digest (`ah_get_promo_digest`)**: Walks receipt history in
+  50-receipt pages back to the requested cutoff date (bounded safely at 150
+  receipts) so long-range digests analyze actual purchase history rather than
+  stopping at 30 receipts.
 - **Review Hardening**: Cache entries are scoped to the authenticated
   principal (a re-login can never read the previous account's cached data),
   a failed response is never cached, a response carrying a domain-level failure
