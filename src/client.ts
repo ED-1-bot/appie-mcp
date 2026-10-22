@@ -1,4 +1,5 @@
 import { AUTH_CONFIG, authFetch, getValidAccessToken } from "./auth.js";
+import { CacheStats, TtlCache, cacheKey } from "./cache.js";
 import {
   AhProduct,
   BonusOffer,
@@ -11,18 +12,197 @@ import {
   StoreInfo,
 } from "./types.js";
 
+/**
+ * Cache TTLs in milliseconds. Only immutable or slow-moving upstream data is
+ * cached — user state (profile, cart, shopping lists, receipt overview) is
+ * always fetched live.
+ */
+export const CACHE_TTL = {
+  /** Search results and promo prices: offers churn daily. */
+  search: 30 * 60 * 1000,
+  /** Product detail: a product's page is stable for a day. */
+  productDetail: 24 * 60 * 60 * 1000,
+  /** Categories, stores, recipes: near-static reference data. */
+  catalog: 24 * 60 * 60 * 1000,
+  /** Bonus folder, personal bonus box, clearance, predictive favorites. */
+  offers: 30 * 60 * 1000,
+  /** A closed receipt is immutable; 30 days covers post-purchase corrections. */
+  receiptDetail: 30 * 24 * 60 * 60 * 1000,
+} as const;
+
 export class AhClient {
   private readonly baseUrl: string;
+  private readonly cache: TtlCache;
+  private lastAuthScope: string | null = null;
 
-  constructor(baseUrl: string = AUTH_CONFIG.api_base) {
+  constructor(baseUrl: string = AUTH_CONFIG.api_base, cache?: TtlCache) {
     this.baseUrl = baseUrl;
+    this.cache =
+      cache ??
+      new TtlCache({
+        enabled: process.env.APPIE_MCP_CACHE !== "off",
+        maxEntries: Number(process.env.APPIE_MCP_CACHE_MAX_ENTRIES ?? 500),
+      });
+  }
+
+  cacheStats(): CacheStats {
+    return this.cache.stats();
+  }
+
+  /**
+   * Fingerprint of the credential in use. It keeps a re-login (a new token
+   * file) from serving the previous account's cached data, and it clears the
+   * cache when the principal actually changes. The raw token never appears in
+   * the key: only its digest does.
+   */
+  private authScope(token: string): string {
+    const scope = token ? cacheKey("auth", [token]).split(" ").pop()! : "anonymous";
+    if (this.lastAuthScope !== null && this.lastAuthScope !== scope) {
+      this.cache.clear();
+    }
+    this.lastAuthScope = scope;
+    return scope;
+  }
+
+  /**
+   * TTL for an endpoint, or `null` when the response must never be cached.
+   * Allowlist by route: a new endpoint is uncached until it is classified.
+   *
+   * `shouldCache` rejects a *successful* response that carries a domain-level
+   * failure (a null receipt, an empty product card). Such a payload must stay
+   * retryable instead of being replayed for the whole TTL.
+   */
+  private cachePolicyFor(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> }
+  ): { ttl: number; shouldCache?: (payload: any) => boolean } | null {
+    const method = (options.method || "GET").toUpperCase();
+
+    if (method !== "GET") {
+      if (endpoint !== "/graphql") return null;
+      const operationName = options.body?.operationName;
+      if (operationName === "FetchPosReceiptsDetails") {
+        return {
+          ttl: CACHE_TTL.receiptDetail,
+          shouldCache: (payload: any) => Boolean(payload?.data?.posReceiptDetails),
+        };
+      }
+      if (operationName === "GetBargainItems") {
+        return {
+          ttl: CACHE_TTL.offers,
+          // An unknown store answers with a null store; that must stay
+          // retryable instead of being replayed as "no bargains".
+          shouldCache: (payload: any) => Boolean(payload?.data?.store),
+        };
+      }
+      // FetchMember (profile) and FetchPosReceiptsPage (receipt overview) are
+      // live-only: they carry personal data or a list that changes.
+      return null;
+    }
+
+    if (endpoint.startsWith("http")) return null;
+
+    if (endpoint.startsWith("/mobile-services/product/search/v2/suggestions")) {
+      return { ttl: CACHE_TTL.search };
+    }
+    if (endpoint.startsWith("/mobile-services/product/search/v2")) {
+      return { ttl: CACHE_TTL.search };
+    }
+    if (endpoint.startsWith("/mobile-services/product/detail/v4/products")) {
+      return {
+        ttl: CACHE_TTL.productDetail,
+        shouldCache: AhClient.isCacheableProductPayload,
+      };
+    }
+    if (endpoint.startsWith("/mobile-services/v1/product-shelves/categories")) {
+      return { ttl: CACHE_TTL.catalog };
+    }
+    if (endpoint.startsWith("/mobile-services/recipe/v2")) {
+      return { ttl: CACHE_TTL.catalog };
+    }
+    if (endpoint.startsWith("/mobile-services/store/v1/stores")) {
+      return { ttl: CACHE_TTL.catalog };
+    }
+    if (endpoint.startsWith("/mobile-services/bonus-group/v1/segments/")) {
+      return { ttl: CACHE_TTL.offers };
+    }
+    if (endpoint.startsWith("/mobile-services/bonusbox/v1")) {
+      return { ttl: CACHE_TTL.offers };
+    }
+    if (endpoint.startsWith("/favorieten/predictive-list")) {
+      return { ttl: CACHE_TTL.offers };
+    }
+
+    // Shopping list, favorite lists, cart and every unknown route stay live.
+    return null;
+  }
+
+  /**
+   * A product payload is cacheable only when it actually carries a product.
+   * The detail route answers `{ productCard }`, the alternatives route an
+   * array, and the bulk route an array or `{ products: [...] }` — a payload
+   * that carries none of these is a failed lookup, not a product.
+   */
+  private static isCacheableProductPayload(payload: any): boolean {
+    if (Array.isArray(payload)) return payload.length > 0;
+    if (Array.isArray(payload?.products)) return payload.products.length > 0;
+    return Boolean(
+      payload?.productCard?.id ?? payload?.productCard?.webshopId ?? payload?.id
+    );
+  }
+
+  private cacheKeyFor(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> },
+    scope: string
+  ): string {
+    const method = (options.method || "GET").toUpperCase();
+
+    if (method === "GET") {
+      const query = Object.entries(options.query ?? {})
+        .filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => [k, String(v)] as [string, string])
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      return cacheKey(`${method} ${endpoint}`, [scope, query]);
+    }
+
+    const body = options.body ?? {};
+    return cacheKey(`${method} ${endpoint}`, [
+      scope,
+      body.operationName ?? "",
+      // The document text is part of the key: two documents can share an
+      // operation name and variables while requesting different fields.
+      typeof body.query === "string" ? body.query : "",
+      body.variables ?? {},
+    ]);
   }
 
   async request<T = any>(
     endpoint: string,
     options: { method?: string; body?: any; query?: Record<string, any> } = {}
   ): Promise<T> {
+    const policy = this.cachePolicyFor(endpoint, options);
+    if (policy === null) {
+      return await this.performRequest<T>(endpoint, options);
+    }
+
     const token = await getValidAccessToken();
+    const scope = this.authScope(token);
+    const key = this.cacheKeyFor(endpoint, options, scope);
+    return await this.cache.wrap<T>(
+      key,
+      policy.ttl,
+      () => this.performRequest<T>(endpoint, options, token),
+      policy.shouldCache
+    );
+  }
+
+  private async performRequest<T = any>(
+    endpoint: string,
+    options: { method?: string; body?: any; query?: Record<string, any> } = {},
+    token?: string
+  ): Promise<T> {
+    const authToken = token ?? (await getValidAccessToken());
     const method = options.method || "GET";
 
     let urlStr = endpoint.startsWith("http") ? endpoint : `${this.baseUrl}${endpoint}`;
@@ -40,7 +220,7 @@ export class AhClient {
     }
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       Accept: "application/json",
     };
 
@@ -300,16 +480,20 @@ export class AhClient {
         quantity: i.quantity || 1,
       })),
     };
-    return await this.request<any>("/mobile-services/shoppinglist/v2/items", {
+    const res = await this.request<any>("/mobile-services/shoppinglist/v2/items", {
       method: "POST",
       body: payload,
     });
+    this.cache.invalidate("GET /mobile-services/shoppinglist");
+    return res;
   }
 
   async removeShoppingListItem(itemId: string | number): Promise<any> {
-    return await this.request<any>(`/mobile-services/shoppinglist/v2/items/${itemId}`, {
+    const res = await this.request<any>(`/mobile-services/shoppinglist/v2/items/${itemId}`, {
       method: "DELETE",
     });
+    this.cache.invalidate("GET /mobile-services/shoppinglist");
+    return res;
   }
 
   async getFavoriteLists(): Promise<FavoriteList[]> {
@@ -334,7 +518,7 @@ export class AhClient {
     listId: string,
     item: { productId: number; quantity?: number; originCode?: string }
   ): Promise<any> {
-    return await this.request<any>(`/mobile-services/lists/v3/lists/${listId}/items`, {
+    const res = await this.request<any>(`/mobile-services/lists/v3/lists/${listId}/items`, {
       method: "POST",
       body: {
         originCode: item.originCode || "SEARCH",
@@ -342,6 +526,8 @@ export class AhClient {
         quantity: item.quantity || 1,
       },
     });
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   async setFavoriteListItemChecked(
@@ -349,22 +535,26 @@ export class AhClient {
     itemId: string,
     checked: boolean = true
   ): Promise<any> {
-    return await this.request<any>(
+    const res = await this.request<any>(
       `/mobile-services/lists/v3/lists/${listId}/items/${itemId}`,
       {
         method: "PATCH",
         body: { checked },
       }
     );
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   async removeFavoriteListItem(listId: string, itemId: string): Promise<any> {
-    return await this.request<any>(
+    const res = await this.request<any>(
       `/mobile-services/lists/v3/lists/${listId}/items/${itemId}`,
       {
         method: "DELETE",
       }
     );
+    this.cache.invalidate("GET /mobile-services/lists/v3");
+    return res;
   }
 
   /**
@@ -668,13 +858,16 @@ export class AhClient {
   }
 
   async activatePersonalBonus(bonusCardNumber: string, selectedBonusIds: number[]): Promise<any> {
-    return await this.request<any>("https://api.ah.nl/handscanner/v1/bonuses", {
+    const res = await this.request<any>("https://api.ah.nl/handscanner/v1/bonuses", {
       method: "PATCH",
       body: {
         bonusCardNumber,
         selectedBonusIds,
       },
     });
+    this.cache.invalidate("GET /mobile-services/bonusbox");
+    this.cache.invalidate("GET /favorieten/predictive-list");
+    return res;
   }
 
   mapProduct(raw: any): AhProduct {
