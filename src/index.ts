@@ -51,6 +51,12 @@ async function showStatus(): Promise<void> {
   }
 
   console.log("\nVerifying live API connection...");
+  const cacheStats = client.cacheStats();
+  console.log(
+    `Response cache: ${cacheStats.enabled ? "enabled" : "disabled"} — ` +
+      `max ${cacheStats.maxEntries} entries. ` +
+      `Call ah_cache_stats for live hit/miss counters of the running server.`
+  );
   try {
     const prof = await client.getProfile();
     console.log(`Customer Name: ${prof.name || "Anonymous / Public"}`);
@@ -74,7 +80,7 @@ export function createServer(customClient?: AhClient): McpServer {
   const c = customClient || client;
   const server = new McpServer({
     name: "appie-mcp",
-    version: "0.1.0",
+    version: "0.3.0",
   });
 
   // 1. Tool: Login Status / Profile Verification
@@ -142,7 +148,7 @@ export function createServer(customClient?: AhClient): McpServer {
     {
       title: "Search Albert Heijn Products",
       description:
-        "Search the Albert Heijn grocery catalog by keyword. Returns matching products with current prices, previous prices, active bonus discounts, unit prices, and web links.",
+        "Search the Albert Heijn grocery catalog by keyword. Returns matching products with current prices, previous prices, active bonus discounts, unit prices, and web links. Results are cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         query: z.string().describe("Grocery product keyword (e.g. 'havermelk', 'koffiebonen', 'bio bananen')"),
@@ -180,7 +186,7 @@ export function createServer(customClient?: AhClient): McpServer {
     {
       title: "Get Albert Heijn Product Details",
       description:
-        "Get detailed information for a specific Albert Heijn product: description, nutritional values, allergens, unit sizes, and pricing.",
+        "Get detailed information for a specific Albert Heijn product: description, nutritional values, allergens, unit sizes, and pricing. Product pages are cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         product_id: z.string().describe("Product ID (e.g. 'wi196825' or '196825')"),
@@ -203,7 +209,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_product_alternatives",
     {
       title: "Get Product Alternatives & Substitutes",
-      description: "Find direct brand alternatives, store-brand swaps, or dietary substitutes for a product.",
+      description: "Find direct brand alternatives, store-brand swaps, or dietary substitutes for a product. Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         product_id: z.string().describe("Product ID (e.g. 'wi196825' or '196825')"),
@@ -226,7 +232,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_categories",
     {
       title: "Get Albert Heijn Product Categories",
-      description: "Get top-level supermarket product shelves and categories (e.g. Aardappel/groente/fruit, Bakkerij, Zuivel).",
+      description: "Get top-level supermarket product shelves and categories (e.g. Aardappel/groente/fruit, Bakkerij, Zuivel). Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),
     },
@@ -248,7 +254,7 @@ export function createServer(customClient?: AhClient): McpServer {
     {
       title: "Get Albert Heijn Weekly Bonus Offers",
       description:
-        "Browse active national Bonus folder discounts, promotions (e.g. 1+1 gratis, 2e halve prijs), and validity windows. The folder is far larger than one page: walk `page` with `limit` to see more of it.",
+        "Browse active national Bonus folder discounts, promotions (e.g. 1+1 gratis, 2e halve prijs), and validity windows. The folder is far larger than one page: walk `page` with `limit` to see more of it. Cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         page: z.number().int().min(0).default(0).describe("Page number (default 0)"),
@@ -274,7 +280,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_personal_bonus",
     {
       title: "Get Personal Bonus Box Offers",
-      description: "Retrieve the 5 personalized weekly Bonus Box promotions for the logged-in Albert Heijn member.",
+      description: "Retrieve the 5 personalized weekly Bonus Box promotions for the logged-in Albert Heijn member. Cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),
     },
@@ -295,7 +301,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_shopping_list",
     {
       title: "Get Albert Heijn Shopping List",
-      description: "Get the user's primary in-app shopping list ('Boodschappenlijst'): items, free-text notes, and checked states.",
+      description: "Get the user's primary in-app shopping list ('Boodschappenlijst'): items, free-text notes, and checked states. Always fetched live, never cached.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),
     },
@@ -423,7 +429,7 @@ export function createServer(customClient?: AhClient): McpServer {
     {
       title: "List Albert Heijn Receipts",
       description:
-        "List in-store cash register receipts (kassabonnen) with date, store name, and total. Pagination is real: page and size walk the whole history, and a size above 100 is fetched in 100-row windows.",
+        "List in-store cash register receipts (kassabonnen) with date, store name, and total. Pagination is real: page and size walk the whole history, and a size above 100 is fetched in 100-row windows. Always fetched live, never cached.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         page: z.number().int().min(0).default(0).describe("Page number (default 0)"),
@@ -449,7 +455,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_receipt_details",
     {
       title: "Get Albert Heijn Receipt Details",
-      description: "Get detailed line items, unit prices, discounts, and total amount for a specific store receipt.",
+      description: "Get detailed line items, unit prices, discounts, and total amount for a specific store receipt. A closed receipt is immutable, so it is cached for 30 days.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         transaction_id: z.string().describe("Receipt transaction ID (from ah_list_receipts)"),
@@ -498,7 +504,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_search_recipes",
     {
       title: "Search Allerhande Recipes",
-      description: "Search the official Albert Heijn Allerhande recipe collection by dish name, ingredient, or keyword.",
+      description: "Search the official Albert Heijn Allerhande recipe collection by dish name, ingredient, or keyword. Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         query: z.string().describe("Recipe search keyword (e.g. 'pasta pesto', 'vegetarische ovenschotel')"),
@@ -522,7 +528,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_recipe_details",
     {
       title: "Get Allerhande Recipe Details & Ingredients",
-      description: "Get full cooking steps and structured ingredient list (with product mappings) for an Allerhande recipe.",
+      description: "Get full cooking steps and structured ingredient list (with product mappings) for an Allerhande recipe. Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         recipe_id: z.string().describe("Recipe ID (e.g. '1195610')"),
@@ -545,7 +551,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_search_stores",
     {
       title: "Search Albert Heijn Stores",
-      description: "Search nearby Albert Heijn stores by postal code or city name to check opening hours, distance, and facilities.",
+      description: "Search nearby Albert Heijn stores by postal code or city name to check opening hours, distance, and facilities. Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         query: z.string().optional().describe("Dutch city name or postal code (e.g. 'Amsterdam' or '1011NG')"),
@@ -568,7 +574,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_clearance_bargains",
     {
       title: "Get Store Clearance Bargains (Overblijvers)",
-      description: "Fetch today-only dynamic clearance markdowns (*vandaag-af* / 35% discount items) for a given store ID.",
+      description: "Fetch today-only dynamic clearance markdowns (*vandaag-af* / 35% discount items) for a given store ID. Cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         store_id: z.number().int().describe("Store ID number (from ah_search_stores)"),
@@ -591,7 +597,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_search_suggestions",
     {
       title: "Get Search Suggestions",
-      description: "Get search autocompletion suggestions and related grocery query keywords from Albert Heijn.",
+      description: "Get search autocompletion suggestions and related grocery query keywords from Albert Heijn. Cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         query: z.string().describe("Search query prefix or keyword"),
@@ -615,7 +621,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_predictive_favorites",
     {
       title: "Get Predictive Favorites",
-      description: "Fetch predictive favorite recommendations and frequently reordered products predicted by Albert Heijn.",
+      description: "Fetch predictive favorite recommendations and frequently reordered products predicted by Albert Heijn. Cached for up to 30 minutes.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),
     },
@@ -660,7 +666,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_products_bulk",
     {
       title: "Get Products Bulk",
-      description: "Fetch product details in bulk for multiple Albert Heijn product IDs (e.g. ['wi196825', 'wi187593']).",
+      description: "Fetch product details in bulk for multiple Albert Heijn product IDs (e.g. ['wi196825', 'wi187593']). Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         product_ids: z.array(z.string()).min(1).describe("List of product IDs (e.g. ['wi196825', 'wi187593'])"),
@@ -683,7 +689,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_sub_categories",
     {
       title: "Get Subcategories",
-      description: "Fetch child subcategories for a specific supermarket category ID.",
+      description: "Fetch child subcategories for a specific supermarket category ID. Cached for up to 24 hours.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({
         category_id: z.union([z.string(), z.number()]).describe("Category ID to retrieve subcategories for"),
@@ -706,7 +712,7 @@ export function createServer(customClient?: AhClient): McpServer {
     "ah_get_cart",
     {
       title: "Get Online Cart",
-      description: "Read-only view of the user's active Albert Heijn online shopping cart and order summary.",
+      description: "Read-only view of the user's active Albert Heijn online shopping cart and order summary. Always fetched live, never cached.",
       annotations: { readOnlyHint: true },
       inputSchema: z.object({}),
     },
@@ -715,6 +721,28 @@ export function createServer(customClient?: AhClient): McpServer {
         const cart = await c.getCart();
         return {
           content: [{ type: "text", text: JSON.stringify(cart, null, 2) }],
+        };
+      } catch (error: any) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // 27. Tool: Cache Statistics
+  server.registerTool(
+    "ah_cache_stats",
+    {
+      title: "Get Response Cache Statistics",
+      description:
+        "Report the in-process response cache: enabled state, hits, misses, hit rate, stored entries and evictions. Use to verify that cached Albert Heijn responses are reused instead of re-fetched.",
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const stats = c.cacheStats();
+        return {
+          content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
         };
       } catch (error: any) {
         return toolError(error);

@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../src/index.js";
 
-test("createServer: registers all 26 tools", () => {
+test("createServer: registers all 27 tools", () => {
   const server = createServer();
   const registered = Object.keys((server as any)._registeredTools);
 
-  assert.strictEqual(registered.length, 26);
+  assert.strictEqual(registered.length, 27);
 
   const expectedTools = [
     "ah_login",
@@ -35,6 +35,7 @@ test("createServer: registers all 26 tools", () => {
     "ah_get_products_bulk",
     "ah_get_sub_categories",
     "ah_get_cart",
+    "ah_cache_stats",
   ];
 
   for (const tool of expectedTools) {

@@ -34,7 +34,7 @@ npm run build
 
 ---
 
-## 🛠️ MCP Tools (26 Tools)
+## 🛠️ MCP Tools (27 Tools)
 
 ### 1. Authentication & Member Profile
 | Tool | Type | Description |
@@ -97,6 +97,60 @@ npm run build
 | :--- | :---: | :--- |
 | `ah_search_stores` | Read | Search nearby AH stores, facilities, and opening hours. |
 | `ah_get_clearance_bargains` | Read | Query store-specific clearance markdowns (*vandaag-af* / 35% discount items). |
+
+### 10. Diagnostics
+| Tool | Type | Description |
+| :--- | :---: | :--- |
+| `ah_cache_stats` | Read | Report the response cache: enabled state, hits, misses, hit rate, entries, evictions. |
+
+---
+
+## 🗄️ Caching & Data Freshness
+
+Albert Heijn's API sends `cache-control: no-store` and no `ETag`, so nothing can
+be cached at the HTTP layer. To cut request volume (and the load a bot-managed
+edge puts on your account), this server keeps a **process-local TTL cache** in
+front of its single HTTP choke point.
+
+**Scope:** in memory only, for the lifetime of the running MCP server process.
+Nothing is written to disk, no cache survives a restart, and no cached response
+contains your tokens.
+
+### What is cached, and for how long
+
+| Data | TTL | Why |
+| :--- | :---: | :--- |
+| Product detail (`ah_get_product`, `ah_get_product_alternatives`, `ah_get_products_bulk`) | 24 hours | A product page is stable for a day |
+| Categories & sub-categories, stores, Allerhande recipes | 24 hours | Near-static reference data |
+| Product search results | 30 minutes | Offer prices churn daily |
+| Bonus folder, personal Bonus Box, clearance (*vandaag-af*), predictive favorites | 30 minutes | Weekly campaign, daily markdowns |
+| Receipt line items (`ah_get_receipt_details`) | 30 days | A closed receipt is immutable |
+| Everything else | — | See below |
+
+### What is never cached
+
+Your member profile, the receipt **overview** list, your shopping list, your
+favorite lists, and the active online cart are **always fetched live**, never
+served from the cache. Those carry live personal state, and a stale read there
+would make the assistant re-add an item you just added.
+
+### What this means for you
+
+* **Prices and offers can be up to 30 minutes old**, and **product pages up to
+  24 hours old**. A price change during that window is not reflected. If you
+  need the current shelf price, say so and the assistant can rely on a
+  fresh search result for a *different* term, or you can restart the server to
+  drop the cache.
+* **Caching is per process.** If your client spawns a fresh server for every
+  session, each session starts with a cold cache and the benefit is limited to
+  repeats within one session.
+* **Kill switch:** set `APPIE_MCP_CACHE=off` to disable the cache entirely (for
+  debugging, or if you need guaranteed-live data). `APPIE_MCP_CACHE_MAX_ENTRIES`
+  caps the number of cached responses (default 500).
+* **Verify it:** call `ah_cache_stats` for the live hit/miss counters of the
+  running server. `npm run status` prints the cache *configuration* (enabled
+  state and size cap) — it starts a separate process, so it cannot show the
+  running server's counters.
 
 ---
 
