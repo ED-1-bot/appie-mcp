@@ -83,7 +83,7 @@ npm run build
 ### 7. Digital Receipts (Kassabonnen)
 | Tool | Type | Description |
 | :--- | :---: | :--- |
-| `ah_list_receipts` | Read | List recent in-store receipts (*kassabonnen*) with dates, store name, and totals. |
+| `ah_list_receipts` | Read | List in-store receipts (*kassabonnen*) with dates, store name, and totals. `page`/`size` walk the full history; a `size` above 100 is fetched in 100-row windows. |
 | `ah_get_receipt_details` | Read | Inspect line items, unit prices, discounts, and payment methods for a receipt. |
 
 ### 8. Allerhande Recipes

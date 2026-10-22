@@ -13,6 +13,7 @@ import {
 } from "./types.js";
 
 /**
+/**
  * Cache TTLs in milliseconds. Only immutable or slow-moving upstream data is
  * cached — user state (profile, cart, shopping lists, receipt overview) is
  * always fetched live.
@@ -29,6 +30,19 @@ export const CACHE_TTL = {
   /** A closed receipt is immutable; 30 days covers post-purchase corrections. */
   receiptDetail: 30 * 24 * 60 * 60 * 1000,
 } as const;
+
+/**
+ * Albert Heijn's receipt feed is offset/limit paginated and rejects a limit
+ * above 100, so larger windows have to be walked in server-sized chunks.
+ */
+const AH_RECEIPTS_MAX_LIMIT = 100;
+
+/**
+ * How far the promo digest may walk back: pages of 50 receipts, bounded because
+ * every receipt in the window costs one details call.
+ */
+const AH_DIGEST_PAGE_SIZE = 50;
+const AH_DIGEST_MAX_RECEIPTS = 150;
 
 export class AhClient {
   private readonly baseUrl: string;
@@ -365,11 +379,12 @@ export class AhClient {
   /**
    * 3. Bonus Deals & Promotions
    */
-  async getBonusOffers(query: string = ""): Promise<AhProduct[]> {
+  async getBonusOffers(query: string = "", page: number = 0, size: number = 30): Promise<AhProduct[]> {
     const res = await this.searchProducts({
       query,
       bonusOnly: true,
-      size: 30,
+      page,
+      size,
     });
     return res.products;
   }
@@ -561,9 +576,17 @@ export class AhClient {
    * 5. Digital Receipts (Kassabonnen)
    */
   async listReceipts(page: number = 0, size: number = 10): Promise<Receipt[]> {
-    const graphqlQuery = {
-      query: `query FetchPosReceiptsPage {
-        posReceiptsPage {
+    const wanted = Math.max(1, Math.trunc(size));
+    const first = Math.max(0, Math.trunc(page)) * wanted;
+    const receipts: Receipt[] = [];
+
+    for (let fetched = 0; fetched < wanted; ) {
+      const limit = Math.min(wanted - fetched, AH_RECEIPTS_MAX_LIMIT);
+      const resp = await this.request<any>("/graphql", {
+        method: "POST",
+        body: {
+          query: `query FetchPosReceiptsPage($pagination: OffsetLimitPagination!) {
+        posReceiptsPage(pagination: $pagination) {
           pagination {
             totalElements
           }
@@ -582,33 +605,57 @@ export class AhClient {
           }
         }
       }`,
-      operationName: "FetchPosReceiptsPage",
-    };
+          variables: { pagination: { offset: first + fetched, limit } },
+          operationName: "FetchPosReceiptsPage",
+        },
+      });
 
-    const resp = await this.request<any>("/graphql", {
-      method: "POST",
-      body: graphqlQuery,
-    });
+      const rawList = resp.data?.posReceiptsPage?.posReceipts;
+      if (!Array.isArray(rawList) || rawList.length === 0) break;
 
-    const rawList = resp.data?.posReceiptsPage?.posReceipts || [];
-    if (!Array.isArray(rawList)) return [];
+      receipts.push(
+        ...rawList.map((r: any) => {
+          const addr = r.storeAddress;
+          const storeName = addr
+            ? `AH ${addr.street || ""}${addr.houseNumber ? " " + addr.houseNumber : ""}${addr.city ? ", " + addr.city : ""}`.trim()
+            : undefined;
 
-    const mapped: Receipt[] = rawList.map((r: any) => {
-      const addr = r.storeAddress;
-      const storeName = addr
-        ? `AH ${addr.street || ""}${addr.houseNumber ? " " + addr.houseNumber : ""}${addr.city ? ", " + addr.city : ""}`.trim()
-        : undefined;
+          return {
+            transactionId: r.id,
+            transactionDate: r.dateTime,
+            total: r.totalAmount?.amount ?? 0,
+            storeName: storeName || undefined,
+          };
+        })
+      );
 
-      return {
-        transactionId: r.id,
-        transactionDate: r.dateTime,
-        total: r.totalAmount?.amount ?? 0,
-        storeName: storeName || undefined,
-      };
-    });
+      fetched += rawList.length;
+      if (rawList.length < limit) break;
+    }
 
-    const start = page * size;
-    return mapped.slice(start, start + size);
+    return receipts;
+  }
+
+  /**
+   * Receipts newer than `cutoff`, oldest last. The digest used to read a fixed
+   * window of 30 receipts, so a 365-day ask really only saw the newest 30 trips;
+   * this walks pages until the cutoff is crossed or `AH_DIGEST_MAX_RECEIPTS`
+   * bounds the walk, because every receipt costs one details call.
+   */
+  private async listReceiptsInWindow(cutoff: number): Promise<Receipt[]> {
+    const collected: Receipt[] = [];
+
+    for (let page = 0; collected.length < AH_DIGEST_MAX_RECEIPTS; page++) {
+      const batch = await this.listReceipts(page, AH_DIGEST_PAGE_SIZE);
+      if (batch.length === 0) break;
+
+      collected.push(...batch);
+      const oldest = new Date(batch[batch.length - 1].transactionDate).getTime();
+      if (oldest < cutoff) break;
+      if (batch.length < AH_DIGEST_PAGE_SIZE) break;
+    }
+
+    return collected.slice(0, AH_DIGEST_MAX_RECEIPTS);
   }
 
   async getReceiptDetails(transactionId: string): Promise<Receipt> {
@@ -690,8 +737,8 @@ export class AhClient {
     const minTimes = options.minTimes || 2;
     const limit = options.limit || 25;
 
-    const receipts = await this.listReceipts(0, 30);
     const cutoff = Date.now() - days * 86400 * 1000;
+    const receipts = await this.listReceiptsInWindow(cutoff);
     const itemCounts = new Map<string, { count: number; name: string }>();
 
     for (const r of receipts) {
