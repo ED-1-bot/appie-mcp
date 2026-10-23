@@ -175,17 +175,22 @@ export class AhClient {
     scope: string
   ): string {
     const method = (options.method || "GET").toUpperCase();
+    // The cache is shared by every client in the process, so the host is part
+    // of the digest: two clients pointed at different bases must never trade
+    // entries. Invalidation stays prefix-based on `<METHOD> <path>`.
+    const host = this.baseUrl;
 
     if (method === "GET") {
       const query = Object.entries(options.query ?? {})
         .filter(([, v]) => v !== undefined && v !== null && v !== "")
         .map(([k, v]) => [k, String(v)] as [string, string])
         .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-      return cacheKey(`${method} ${endpoint}`, [scope, query]);
+      return cacheKey(`${method} ${endpoint}`, [host, scope, query]);
     }
 
     const body = options.body ?? {};
     return cacheKey(`${method} ${endpoint}`, [
+      host,
       scope,
       body.operationName ?? "",
       // The document text is part of the key: two documents can share an

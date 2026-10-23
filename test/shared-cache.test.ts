@@ -138,6 +138,13 @@ describe("shared response cache - one live instance per process", () => {
     assert.equal(client.cacheStats().hits, 1);
   });
 
+  it("does not share entries between clients on different hosts", async () => {
+    await search(new AhClient("https://api.ah.nl"));
+    await search(new AhClient("https://staging.api.ah.nl"));
+
+    assert.equal(searchCalls, 2, "a different host must not read the first client's entry");
+  });
+
   it("reports exactly one stored entry for repeated identical calls", async () => {
     const client = new AhClient("https://api.ah.nl");
     for (let i = 0; i < 5; i++) {
